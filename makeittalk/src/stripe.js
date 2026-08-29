@@ -80,6 +80,9 @@ export async function handlePortal(request, env, user) {
   const session = await stripeRequest(env, 'POST', '/billing_portal/sessions', {
     customer: user.stripe_customer_id,
     return_url: `${env.APP_ORIGIN}/app`,
+    // golive.mjs provisions a portal configuration via API so no dashboard
+    // activation step is needed; empty/unset falls back to the default.
+    ...(env.STRIPE_PORTAL_CONFIG ? { configuration: env.STRIPE_PORTAL_CONFIG } : {}),
   });
   return json({ url: session.url });
 }

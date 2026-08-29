@@ -1,5 +1,26 @@
 # Taking makeittalk.dev live
 
+## The fast path: one command
+
+```bash
+cd makeittalk
+CLOUDFLARE_API_TOKEN=... ANTHROPIC_API_KEY=... STRIPE_SECRET_KEY=sk_live_... node golive.mjs
+```
+
+`golive.mjs` runs this entire document: creates the D1 database + migrations,
+generates and sets the encryption key (it prints it once - save it), creates
+the Stripe products, prices, webhook, and customer portal config via API,
+patches wrangler.toml with every id, enables the makeittalk.dev routes, and
+deploys. Re-running is safe; it skips what already exists. The Cloudflare
+token needs Account → Workers Scripts:Edit + D1:Edit and Zone
+(makeittalk.dev) → Workers Routes:Edit + DNS:Edit. Then sign up with
+ryan@getdylr.com and you're the admin.
+
+The manual steps below are the same work, spelled out - useful for
+understanding or debugging, skippable otherwise.
+
+---
+
 Everything below happens once. Total time: ~30 minutes. Prerequisites: the
 Cloudflare account that holds the makeittalk.dev domain, a Stripe account, an
 Anthropic Console API key, and (optional) a Resend account for emails.
