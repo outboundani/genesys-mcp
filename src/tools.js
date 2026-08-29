@@ -933,6 +933,11 @@ export const TOOLS = [
     },
     handler: async (gc, a) => {
       if (!/^\/api\/v2\//.test(a.path)) throw new GenesysError('path must start with /api/v2/', 400);
+      // Campaign ignition is refused at the code level, not just by policy:
+      // no write may set an outbound campaign/sequence status to "on".
+      if (a.method !== 'GET' && /\/outbound\//.test(a.path) && /"(campaignStatus|status)"\s*:\s*"on"/.test(JSON.stringify(a.body || {}))) {
+        throw new GenesysError('Refused: this server never starts campaigns or sequences. A human presses go in Admin > Outbound > Campaign Management.', 403);
+      }
       return gc.api(a.method, a.path, { body: a.body, query: a.query });
     },
   },

@@ -118,3 +118,17 @@ test('no tool can start a campaign: create_campaign pins status off and no start
   assert.equal(DIALING_MODES.length, 4);
   assert.equal(Object.keys(RECALL_KEYS).length, 5);
 });
+
+test('genesys_api_call refuses campaign ignition writes', async () => {
+  const power = TOOLS.find((t) => t.name === 'genesys_api_call');
+  const gc = { api: async () => ({ ok: true }) };
+  await assert.rejects(
+    () => power.handler(gc, { method: 'PATCH', path: '/api/v2/outbound/campaigns/xyz', body: { campaignStatus: 'on' } }),
+    /never starts campaigns/);
+  await assert.rejects(
+    () => power.handler(gc, { method: 'PUT', path: '/api/v2/outbound/sequences/xyz', body: { name: 'x', status: 'on' } }),
+    /never starts campaigns/);
+  // Non-ignition outbound writes and reads still pass through.
+  assert.deepEqual(await power.handler(gc, { method: 'PATCH', path: '/api/v2/outbound/campaigns/xyz', body: { campaignStatus: 'off' } }), { ok: true });
+  assert.deepEqual(await power.handler(gc, { method: 'GET', path: '/api/v2/outbound/campaigns/xyz' }), { ok: true });
+});
