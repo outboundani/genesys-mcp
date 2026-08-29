@@ -1,7 +1,12 @@
 #!/usr/bin/env node
 // One-shot go-live for makeittalk.dev. Run from this folder:
 //
-//   CLOUDFLARE_API_TOKEN=... ANTHROPIC_API_KEY=... STRIPE_SECRET_KEY=... node golive.mjs
+//   ANTHROPIC_API_KEY=... STRIPE_SECRET_KEY=sk_live_... node golive.mjs
+//
+// Cloudflare auth: an existing `npx wrangler login` session is enough, or set
+// CLOUDFLARE_API_TOKEN. ANTHROPIC_API_KEY and STRIPE_SECRET_KEY are optional
+// but partial: without them the site deploys with generation / paid checkout
+// switched off until you re-run with them set.
 //
 // Optional env: RESEND_API_KEY (emails), SKIP_DOMAIN=1 (deploy to workers.dev
 // only, attach makeittalk.dev later), APP_URL (defaults https://makeittalk.dev).
@@ -30,11 +35,13 @@ const TOML = 'wrangler.toml';
 const die = (msg) => { console.error(`\n✗ ${msg}`); process.exit(1); };
 const step = (msg) => console.log(`\n\x1b[1m▸ ${msg}\x1b[0m`);
 const ok = (msg) => console.log(`  ✓ ${msg}`);
+const warn = (msg) => console.log(`  ⚠ ${msg}`);
 
-for (const name of ['CLOUDFLARE_API_TOKEN', 'ANTHROPIC_API_KEY', 'STRIPE_SECRET_KEY']) {
-  if (!process.env[name]) die(`${name} is required. See the header of this script.`);
-}
-if (process.env.STRIPE_SECRET_KEY.startsWith('sk_test_')) {
+// Cloudflare auth: an existing `wrangler login` session works; a
+// CLOUDFLARE_API_TOKEN env var also works. One of the two must be present.
+const HAS_STRIPE = Boolean(process.env.STRIPE_SECRET_KEY);
+const HAS_ANTHROPIC = Boolean(process.env.ANTHROPIC_API_KEY);
+if (HAS_STRIPE && process.env.STRIPE_SECRET_KEY.startsWith('sk_test_')) {
   console.log('\n⚠ Stripe key is TEST mode - fine for a rehearsal, re-run with sk_live_ for real billing.');
 }
 
@@ -72,6 +79,16 @@ const patchToml = (re, replacement, label) => {
   if (next !== toml) { toml = next; writeFileSync(TOML, toml); ok(`wrangler.toml: ${label}`); }
 };
 
+// ---------- 0 · Cloudflare auth ----------
+step('Cloudflare auth');
+const who = wrangler(['whoami'], { allowFail: true });
+if (/not authenticated/i.test(who.out) || who.code !== 0) {
+  die('Not authenticated with Cloudflare. Run `npx wrangler login` first, or set CLOUDFLARE_API_TOKEN.');
+}
+ok(who.out.match(/associated with the email (.+?)[.!\s]/)?.[1]
+  ? `logged in as ${who.out.match(/associated with the email (.+?)[.!\s]/)[1]}`
+  : 'authenticated');
+
 // ---------- 1 · D1 ----------
 step('D1 database');
 let dbId = null;
@@ -107,12 +124,17 @@ if (!hasSecret('ENCRYPTION_KEY')) {
 } else {
   ok('ENCRYPTION_KEY already set (left untouched)');
 }
-putSecret('ANTHROPIC_API_KEY', process.env.ANTHROPIC_API_KEY);
-putSecret('STRIPE_SECRET_KEY', process.env.STRIPE_SECRET_KEY);
+if (HAS_ANTHROPIC) putSecret('ANTHROPIC_API_KEY', process.env.ANTHROPIC_API_KEY);
+else warn('ANTHROPIC_API_KEY not provided - the site deploys but GENERATION IS OFF until you re-run with it set');
+if (HAS_STRIPE) putSecret('STRIPE_SECRET_KEY', process.env.STRIPE_SECRET_KEY);
 if (process.env.RESEND_API_KEY) putSecret('RESEND_API_KEY', process.env.RESEND_API_KEY);
 else ok('RESEND_API_KEY not provided - signups auto-verify (add later for verification emails)');
 
 // ---------- 3 · Stripe ----------
+if (!HAS_STRIPE) {
+  step('Stripe skipped');
+  warn('STRIPE_SECRET_KEY not provided - free tier works, paid checkout stays off until you re-run with it set');
+} else {
 step('Stripe products + prices');
 async function ensurePrice(lookupKey, productName, dollars) {
   const existing = await stripe('GET', `/prices?lookup_keys[]=${lookupKey}&limit=1`);
@@ -171,6 +193,7 @@ if (!portal) {
   ok(`portal configuration exists (${portal.id})`);
 }
 patchToml(/STRIPE_PORTAL_CONFIG = "[^"]*"/, `STRIPE_PORTAL_CONFIG = "${portal.id}"`, 'portal config id');
+}
 
 // ---------- 4 · Domain routes ----------
 if (!process.env.SKIP_DOMAIN) {
@@ -198,7 +221,7 @@ console.log(deploy.out.split('\n').filter((l) => /https:\/\/|Deployed|Uploaded/.
 
 console.log(`
 \x1b[1m✦ makeittalk is live.\x1b[0m
-
+${HAS_ANTHROPIC ? '' : '\n  ⚠ generation is OFF - re-run with ANTHROPIC_API_KEY set'}${HAS_STRIPE ? '' : '\n  ⚠ paid checkout is OFF - re-run with STRIPE_SECRET_KEY set'}
 Next (2 minutes):
   1. ${APP_URL}/health should say {"ok":true,"configured":true}
   2. Sign up at ${APP_URL}/signup with ryan@getdylr.com → auto-admin, comp plan
