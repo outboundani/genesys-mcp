@@ -2,11 +2,13 @@
 // Platform API calls and returns plain JSON for the model.
 //
 // Scope is deliberate: config reads + create/build actions. NO analytics/KPI
-// tools and NO contact-list management - see about.js for why.
+// tools - see about.js for why. Outbound campaigns and sequences are always
+// created OFF, and no ignition tool ships: a human presses go.
 
 import { GenesysClient, GenesysError, REGIONS } from './genesys.js';
 import { ABOUT } from './about.js';
 import { validateFlowSpec, specToArchyYaml, specToMermaid, configToMermaid, FLOW_ACTIONS } from './flows.js';
+import { composeAttemptLimits, composeCallableTimeSet, composeContactList, cadenceToMermaid, DIALING_MODES } from './outbound.js';
 
 // ---------- name → object resolution helpers ----------
 
@@ -404,6 +406,375 @@ export const TOOLS = [
     },
   },
 
+  // ----- outbound (lists, campaigns, cadences) -----
+  {
+    name: 'list_contact_lists',
+    description: 'List outbound contact lists (name, size, columns, attached attempt limits). Optional name_filter supports * wildcards.',
+    inputSchema: {
+      type: 'object',
+      properties: { name_filter: { type: 'string', description: 'Contact list name filter, * wildcards allowed' } },
+      additionalProperties: false,
+    },
+    handler: async (gc, a) => {
+      const r = await gc.listAll('/api/v2/outbound/contactlists', { includeSize: true, ...(a.name_filter ? { name: a.name_filter } : {}) });
+      return {
+        total: r.total, truncated: r.truncated,
+        contactLists: r.entities.map((l) => ({
+          id: l.id, name: l.name, size: l.size, columns: l.columnNames,
+          phoneColumns: l.phoneColumns?.map((p) => `${p.columnName} (${p.type})`),
+          attemptLimits: l.attemptLimits?.name, division: l.division?.name,
+        })),
+      };
+    },
+  },
+  {
+    name: 'get_contact_list',
+    description: 'Get a contact list\'s full configuration (columns, phone columns, attempt limits, time zone mapping) by name or id.',
+    inputSchema: {
+      type: 'object',
+      properties: { contact_list: { type: 'string', description: 'Contact list name or id' } },
+      required: ['contact_list'],
+      additionalProperties: false,
+    },
+    handler: async (gc, a) => gc.get(`/api/v2/outbound/contactlists/${(await resolveOne(gc, 'contact list', '/api/v2/outbound/contactlists', a.contact_list)).id}`, { includeSize: true }),
+  },
+  {
+    name: 'create_contact_list',
+    description: 'Create an outbound contact list: name, columns (e.g. ["first_name","phone","zip"]), and phone_columns marking which columns hold numbers. Compliance windows come from ONE of: zip_column (automatic local-time-zone mapping; excludes campaign callable time sets) or time_zone_column (a column of IANA zones per contact, REQUIRED for campaigns with a callable time set, and impossible to add later). Optionally attach attempt_limits. Add rows afterwards with add_contacts.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        name: { type: 'string' },
+        columns: { type: 'array', items: { type: 'string' }, description: 'Column names for the list' },
+        phone_columns: {
+          type: 'array',
+          items: { type: 'object', properties: { column: { type: 'string' }, type: { type: 'string', description: 'cell | home | work | voice | other (default cell)' } }, required: ['column'], additionalProperties: false },
+          description: 'Which columns hold phone numbers',
+        },
+        attempt_limits: { type: 'string', description: 'Attempt limits name or id to attach (see create_attempt_limits)' },
+        zip_column: { type: 'string', description: 'Column holding ZIP codes; enables automatic time zone mapping' },
+        automatic_time_zone_mapping: { type: 'boolean', description: 'Override the zip_column default' },
+        time_zone_column: { type: 'string', description: 'Column holding each contact\'s IANA time zone (e.g. America/New_York); required to use callable time sets' },
+        division: { type: 'string', description: 'Division name or id' },
+      },
+      required: ['name', 'columns', 'phone_columns'],
+      additionalProperties: false,
+    },
+    handler: async (gc, a) => {
+      const body = composeContactList(a);
+      if (a.attempt_limits) body.attemptLimits = { id: (await resolveOne(gc, 'attempt limits', '/api/v2/outbound/attemptlimits', a.attempt_limits)).id };
+      if (a.division) body.division = { id: (await resolveOne(gc, 'division', '/api/v2/authorization/divisions', a.division)).id };
+      const l = await gc.post('/api/v2/outbound/contactlists', body);
+      return { created: true, id: l.id, name: l.name, columns: l.columnNames, phoneColumns: l.phoneColumns, attemptLimits: l.attemptLimits?.name, automaticTimeZoneMapping: l.automaticTimeZoneMapping };
+    },
+  },
+  {
+    name: 'add_contacts',
+    description: 'Add contacts to a contact list (max 50 per call). Each contact is a flat object of column -> value matching the list\'s columns; phone values as E.164 or 10-digit. CAUTION: contacts added to a list that a RUNNING campaign is dialing will be called - confirm the target list with the user first.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        contact_list: { type: 'string', description: 'Contact list name or id' },
+        contacts: { type: 'array', items: { type: 'object', additionalProperties: true }, description: 'Rows: { column: value, ... }' },
+        callable: { type: 'boolean', description: 'Whether the new contacts are dialable (default true)' },
+      },
+      required: ['contact_list', 'contacts'],
+      additionalProperties: false,
+    },
+    handler: async (gc, a) => {
+      if (!Array.isArray(a.contacts) || !a.contacts.length) throw new GenesysError('contacts must be a non-empty array', 400);
+      if (a.contacts.length > 50) throw new GenesysError('Max 50 contacts per call - send the rest in another call', 400);
+      const list = await resolveOne(gc, 'contact list', '/api/v2/outbound/contactlists', a.contact_list);
+      const body = a.contacts.map((c) => ({
+        contactListId: list.id,
+        data: Object.fromEntries(Object.entries(c).map(([k, v]) => [k, String(v)])),
+        callable: a.callable !== false,
+      }));
+      const r = await gc.post(`/api/v2/outbound/contactlists/${list.id}/contacts`, body);
+      return { added: Array.isArray(r) ? r.length : a.contacts.length, contactList: list.name || list.id };
+    },
+  },
+  {
+    name: 'create_attempt_limits',
+    description: 'Create an attempt-limits object: the retry cadence for a contact list (max attempts per contact/number, and per-outcome recalls like "no_answer: retry twice, 240 minutes apart"). Attach it to a contact list via create_contact_list. Recall reasons: busy, no_answer, answering_machine, disconnect, fax.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        name: { type: 'string' },
+        max_attempts_per_contact: { type: 'number', description: 'Default 3' },
+        max_attempts_per_number: { type: 'number' },
+        time_zone: { type: 'string', description: 'IANA time zone the daily counters reset in (default America/New_York)' },
+        reset_period: { type: 'string', enum: ['NEVER', 'TODAY'], description: 'When attempt counts reset (default NEVER)' },
+        recalls: {
+          type: 'object',
+          description: 'Per-outcome retry rules, e.g. { "no_answer": { "attempts": 2, "minutes_between": 240 } }',
+          additionalProperties: { type: 'object', properties: { attempts: { type: 'number' }, minutes_between: { type: 'number' } }, additionalProperties: false },
+        },
+      },
+      required: ['name'],
+      additionalProperties: false,
+    },
+    handler: async (gc, a) => {
+      const al = await gc.post('/api/v2/outbound/attemptlimits', composeAttemptLimits(a));
+      return { created: true, id: al.id, name: al.name, maxAttemptsPerContact: al.maxAttemptsPerContact, recallEntries: al.recallEntries };
+    },
+  },
+  {
+    name: 'create_callable_time_set',
+    description: 'Create a callable time set: the compliance calling windows a campaign may dial in (e.g. Mon-Fri 09:00-19:00 Eastern). days uses two-letter codes MO TU WE TH FR SA SU; times are 24h HH:MM. Attach to campaigns via create_campaign.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        name: { type: 'string' },
+        windows: {
+          type: 'array',
+          items: {
+            type: 'object',
+            properties: {
+              days: { type: 'array', items: { type: 'string', enum: ['MO', 'TU', 'WE', 'TH', 'FR', 'SA', 'SU'] } },
+              start_time: { type: 'string', description: '24h HH:MM' },
+              end_time: { type: 'string', description: '24h HH:MM' },
+              time_zone: { type: 'string', description: 'IANA time zone (default America/New_York)' },
+            },
+            required: ['days', 'start_time', 'end_time'],
+            additionalProperties: false,
+          },
+        },
+      },
+      required: ['name', 'windows'],
+      additionalProperties: false,
+    },
+    handler: async (gc, a) => {
+      const t = await gc.post('/api/v2/outbound/callabletimesets', composeCallableTimeSet(a));
+      return { created: true, id: t.id, name: t.name, callableTimes: t.callableTimes };
+    },
+  },
+  {
+    name: 'create_dnc_list',
+    description: 'Create an internal Do-Not-Call list, optionally seeding it with phone numbers (max 100 here; add more later via another call). Attach to campaigns via create_campaign.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        name: { type: 'string' },
+        numbers: { type: 'array', items: { type: 'string' }, description: 'Initial DNC phone numbers' },
+        division: { type: 'string', description: 'Division name or id' },
+      },
+      required: ['name'],
+      additionalProperties: false,
+    },
+    handler: async (gc, a) => {
+      const body = { name: a.name, dncSourceType: 'rds', contactMethod: 'Phone' };
+      if (a.division) body.division = { id: (await resolveOne(gc, 'division', '/api/v2/authorization/divisions', a.division)).id };
+      const d = await gc.post('/api/v2/outbound/dnclists', body);
+      let numbersAdded = 0, numbersError;
+      if (a.numbers?.length) {
+        try {
+          if (a.numbers.length > 100) throw new GenesysError('Max 100 numbers per call', 400);
+          await gc.post(`/api/v2/outbound/dnclists/${d.id}/phonenumbers`, a.numbers.map(String));
+          numbersAdded = a.numbers.length;
+        } catch (e) { numbersError = e.message; }
+      }
+      return { created: true, id: d.id, name: d.name, numbersAdded, ...(numbersError ? { numbersError } : {}) };
+    },
+  },
+  {
+    name: 'list_campaigns',
+    description: 'List outbound campaigns (name, dialing mode, status, contact list, queue).',
+    inputSchema: {
+      type: 'object',
+      properties: { name_filter: { type: 'string', description: 'Campaign name filter, * wildcards allowed' } },
+      additionalProperties: false,
+    },
+    handler: async (gc, a) => {
+      const r = await gc.listAll('/api/v2/outbound/campaigns', a.name_filter ? { name: a.name_filter } : {});
+      return {
+        total: r.total, truncated: r.truncated,
+        campaigns: r.entities.map((c) => ({
+          id: c.id, name: c.name, dialingMode: c.dialingMode, campaignStatus: c.campaignStatus,
+          contactList: c.contactList?.name, queue: c.queue?.name, division: c.division?.name,
+        })),
+      };
+    },
+  },
+  {
+    name: 'get_campaign',
+    description: 'Get a campaign\'s full configuration (mode, list, queue, script, time set, DNC lists, caller id) by name or id.',
+    inputSchema: {
+      type: 'object',
+      properties: { campaign: { type: 'string', description: 'Campaign name or id' } },
+      required: ['campaign'],
+      additionalProperties: false,
+    },
+    handler: async (gc, a) => gc.get(`/api/v2/outbound/campaigns/${(await resolveOne(gc, 'campaign', '/api/v2/outbound/campaigns', a.campaign)).id}`),
+  },
+  {
+    name: 'create_campaign',
+    description: 'Create an outbound campaign wired to a contact list and queue. ALWAYS created with status off - no tool here can start a campaign; a human turns it on in Genesys Admin. dialing_mode: preview (agent clicks to dial; default and safest), progressive, predictive, or agentless. Agent modes attach a script (defaults to the org\'s published outbound script); progressive/predictive/agentless need a call analysis response set (defaults to the org\'s default set). Phone columns are inherited from the contact list.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        name: { type: 'string' },
+        contact_list: { type: 'string', description: 'Contact list name or id' },
+        queue: { type: 'string', description: 'Queue name or id (required unless agentless)' },
+        dialing_mode: { type: 'string', enum: ['preview', 'progressive', 'predictive', 'agentless'], description: 'Default preview' },
+        caller_name: { type: 'string', description: 'Outbound caller id name' },
+        caller_number: { type: 'string', description: 'Outbound caller id number (ANI)' },
+        script: { type: 'string', description: 'Published script name or id (defaults to the org\'s outbound script)' },
+        call_analysis_response_set: { type: 'string', description: 'Response set name or id (non-preview modes; defaults to the org default)' },
+        callable_time_set: { type: 'string', description: 'Callable time set name or id (calling windows)' },
+        dnc_lists: { type: 'array', items: { type: 'string' }, description: 'DNC list names or ids' },
+        site: { type: 'string', description: 'Telephony site name or id (only if your org needs it)' },
+        division: { type: 'string', description: 'Division name or id' },
+        abandon_rate: { type: 'number', description: 'Target abandon rate % (progressive/predictive; default 3)' },
+        outbound_line_count: { type: 'number', description: 'Lines for agentless campaigns (default 1)' },
+        no_answer_timeout: { type: 'number', description: 'Seconds before a ring counts as no-answer' },
+        priority: { type: 'number', description: '1-5' },
+      },
+      required: ['name', 'contact_list', 'caller_name', 'caller_number'],
+      additionalProperties: false,
+    },
+    handler: async (gc, a) => {
+      const mode = (a.dialing_mode || 'preview').toLowerCase();
+      if (!DIALING_MODES.includes(mode)) throw new GenesysError(`dialing_mode must be one of: ${DIALING_MODES.join(', ')}`, 400);
+      const list = await resolveOne(gc, 'contact list', '/api/v2/outbound/contactlists', a.contact_list);
+      const listFull = await gc.get(`/api/v2/outbound/contactlists/${list.id}`);
+      if (a.callable_time_set && listFull.automaticTimeZoneMapping) {
+        throw new GenesysError(
+          `Contact list "${listFull.name}" uses automatic time zone mapping, which conflicts with a campaign callable time set. ` +
+          'Pick one: drop callable_time_set (Genesys dials each contact inside their local legal window), or use a contact list without zip-based mapping.', 400);
+      }
+      if (a.callable_time_set && !(listFull.phoneColumns || []).every((p) => p.callableTimeColumn)) {
+        throw new GenesysError(
+          `Contact list "${listFull.name}" has no time zone column on its phone columns, so Genesys will reject a callable time set. ` +
+          'Create the list with time_zone_column (zone columns cannot be added later), or drop callable_time_set and use a zip_column list with automatic time zone mapping.', 400);
+      }
+      const body = {
+        name: a.name, dialingMode: mode, campaignStatus: 'off',
+        contactList: { id: list.id },
+        phoneColumns: listFull.phoneColumns,
+        callerName: a.caller_name, callerAddress: a.caller_number,
+      };
+      if (mode !== 'agentless') {
+        if (!a.queue) throw new GenesysError(`dialing_mode ${mode} needs a queue`, 400);
+        body.queue = { id: (await resolveOne(gc, 'queue', '/api/v2/routing/queues', a.queue)).id };
+        const script = a.script
+          ? await resolveOne(gc, 'script', '/api/v2/scripts/published', a.script)
+          : ((await gc.get('/api/v2/scripts/published', { pageSize: 50 })).entities || []).find((s) => /outbound/i.test(s.name || ''));
+        if (!script) throw new GenesysError('No published outbound script found - pass script explicitly', 400);
+        body.script = { id: script.id };
+      }
+      if (mode !== 'preview') {
+        const cars = a.call_analysis_response_set
+          ? await resolveOne(gc, 'call analysis response set', '/api/v2/outbound/callanalysisresponsesets', a.call_analysis_response_set)
+          : (await gc.listAll('/api/v2/outbound/callanalysisresponsesets')).entities.find((x) => /default/i.test(x.name || ''));
+        if (!cars) throw new GenesysError('No call analysis response set found - create one in Admin or pass it explicitly', 400);
+        body.callAnalysisResponseSet = { id: cars.id };
+        if (mode !== 'agentless') body.abandonRate = a.abandon_rate ?? 3;
+      }
+      if (mode === 'agentless') body.outboundLineCount = a.outbound_line_count ?? 1;
+      if (a.callable_time_set) body.callableTimeSet = { id: (await resolveOne(gc, 'callable time set', '/api/v2/outbound/callabletimesets', a.callable_time_set)).id };
+      if (a.dnc_lists?.length) {
+        body.dncLists = [];
+        for (const d of a.dnc_lists) body.dncLists.push({ id: (await resolveOne(gc, 'DNC list', '/api/v2/outbound/dnclists', d)).id });
+      }
+      if (a.site) body.site = { id: (await resolveOne(gc, 'site', '/api/v2/telephony/providers/edges/sites', a.site)).id };
+      if (a.division) body.division = { id: (await resolveOne(gc, 'division', '/api/v2/authorization/divisions', a.division)).id };
+      if (a.no_answer_timeout) body.noAnswerTimeout = a.no_answer_timeout;
+      if (a.priority) body.priority = a.priority;
+      const c = await gc.post('/api/v2/outbound/campaigns', body);
+      return {
+        created: true, id: c.id, name: c.name, dialingMode: c.dialingMode, campaignStatus: c.campaignStatus,
+        contactList: c.contactList?.name || listFull.name, queue: c.queue?.name,
+        script: c.script?.name, callableTimeSet: c.callableTimeSet?.name, dncLists: c.dncLists?.map((d) => d.name),
+        note: 'Created OFF by design. No tool here starts a campaign - a human turns it on in Admin > Outbound > Campaign Management.',
+      };
+    },
+  },
+  {
+    name: 'create_campaign_sequence',
+    description: 'Chain campaigns into an ordered cadence (a campaign sequence): campaign 1 runs to completion, then campaign 2, and so on. Pass campaigns in dialing order (names or ids). Created with status off; a human starts it. Render the result with render_cadence.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        name: { type: 'string' },
+        campaigns: { type: 'array', items: { type: 'string' }, description: 'Campaign names or ids, in dialing order' },
+      },
+      required: ['name', 'campaigns'],
+      additionalProperties: false,
+    },
+    handler: async (gc, a) => {
+      if (!Array.isArray(a.campaigns) || !a.campaigns.length) throw new GenesysError('campaigns must be a non-empty array', 400);
+      const refs = [];
+      for (const c of a.campaigns) refs.push({ id: (await resolveOne(gc, 'campaign', '/api/v2/outbound/campaigns', c)).id });
+      const s = await gc.post('/api/v2/outbound/sequences', { name: a.name, campaigns: refs, status: 'off' });
+      return {
+        created: true, id: s.id, name: s.name, status: s.status,
+        order: (s.campaigns || refs).map((c, i) => `${i + 1}. ${c.name || c.id}`),
+        note: 'Sequence created OFF by design; a human starts it in Admin > Outbound > Campaign Management.',
+      };
+    },
+  },
+  {
+    name: 'list_outbound_assets',
+    description: 'One-call inventory of the org\'s outbound building blocks: sequences, attempt limits, callable time sets, DNC lists, call analysis response sets, telephony sites, and published scripts. Run this before building a cadence.',
+    inputSchema: { type: 'object', properties: {}, additionalProperties: false },
+    handler: async (gc) => {
+      const [seq, al, cts, dnc, cars, sites, scripts] = await Promise.all([
+        gc.listAll('/api/v2/outbound/sequences'),
+        gc.listAll('/api/v2/outbound/attemptlimits'),
+        gc.listAll('/api/v2/outbound/callabletimesets'),
+        gc.listAll('/api/v2/outbound/dnclists'),
+        gc.listAll('/api/v2/outbound/callanalysisresponsesets'),
+        gc.listAll('/api/v2/telephony/providers/edges/sites'),
+        gc.get('/api/v2/scripts/published', { pageSize: 50 }),
+      ]);
+      return {
+        sequences: seq.entities.map((s) => ({ id: s.id, name: s.name, status: s.status, campaigns: s.campaigns?.map((c) => c.name ?? c.id) })),
+        attemptLimits: al.entities.map((x) => ({ id: x.id, name: x.name, maxAttemptsPerContact: x.maxAttemptsPerContact })),
+        callableTimeSets: cts.entities.map(slim),
+        dncLists: dnc.entities.map(slim),
+        callAnalysisResponseSets: cars.entities.map(slim),
+        sites: sites.entities.map(slim),
+        publishedScripts: (scripts.entities || []).map(slim),
+      };
+    },
+  },
+  {
+    name: 'render_cadence',
+    description: 'Render a campaign sequence (or a single campaign) as a Mermaid diagram showing each wave: dialing mode, queue, contact list size, attempt limits, calling windows, DNC. Show the user this after building a cadence.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        sequence: { type: 'string', description: 'Sequence name or id' },
+        campaign: { type: 'string', description: 'Single campaign name or id (alternative to sequence)' },
+      },
+      additionalProperties: false,
+    },
+    handler: async (gc, a) => {
+      if (!a.sequence && !a.campaign) throw new GenesysError('Provide sequence or campaign', 400);
+      let name = null, status = null, campRefs;
+      if (a.sequence) {
+        const ref = await resolveOne(gc, 'sequence', '/api/v2/outbound/sequences', a.sequence);
+        const s = await gc.get(`/api/v2/outbound/sequences/${ref.id}`);
+        name = s.name; status = s.status; campRefs = s.campaigns || [];
+      } else {
+        campRefs = [await resolveOne(gc, 'campaign', '/api/v2/outbound/campaigns', a.campaign)];
+      }
+      const campaigns = await Promise.all(campRefs.map((c) => gc.get(`/api/v2/outbound/campaigns/${c.id}`)));
+      const listIds = [...new Set(campaigns.map((c) => c.contactList?.id).filter(Boolean))];
+      const lists = Object.fromEntries(await Promise.all(listIds.map(async (id) => [id, await gc.get(`/api/v2/outbound/contactlists/${id}`, { includeSize: true })])));
+      const steps = campaigns.map((c) => {
+        const l = lists[c.contactList?.id];
+        return {
+          name: c.name, dialingMode: c.dialingMode, queue: c.queue?.name,
+          contactList: l?.name, listSize: l?.size, attemptLimits: l?.attemptLimits?.name,
+          timeSet: c.callableTimeSet?.name, dncLists: (c.dncLists || []).map((d) => d.name).filter(Boolean),
+        };
+      });
+      return { mermaid: cadenceToMermaid(name, status, steps), note: 'Render the mermaid diagram for the user.' };
+    },
+  },
+
   // ----- flow building (Architect) -----
   {
     name: 'build_flow',
@@ -588,6 +959,9 @@ export async function callTool(cfg, name, args = {}) {
 export const WRITE_TOOLS = new Set([
   'create_queue', 'create_wrapup_code', 'create_skill', 'assign_user_skill',
   'create_schedule', 'create_schedule_group',
+  'create_contact_list', 'add_contacts', 'create_attempt_limits',
+  'create_callable_time_set', 'create_dnc_list', 'create_campaign',
+  'create_campaign_sequence',
   'publish_flow', 'unlock_flow', 'genesys_api_call',
 ]);
 
@@ -596,6 +970,7 @@ export const TOOL_GROUPS = [
   { name: 'Queues & Routing', icon: '📞', tools: ['list_queues', 'get_queue', 'create_queue', 'list_wrapup_codes', 'create_wrapup_code'] },
   { name: 'Users & Skills', icon: '👥', tools: ['list_users', 'get_user', 'list_skills', 'create_skill', 'assign_user_skill'] },
   { name: 'Schedules & Hours', icon: '🕐', tools: ['list_schedules', 'create_schedule', 'create_schedule_group'] },
+  { name: 'Outbound (Campaigns & Cadences)', icon: '📤', tools: ['list_contact_lists', 'get_contact_list', 'create_contact_list', 'add_contacts', 'create_attempt_limits', 'create_callable_time_set', 'create_dnc_list', 'list_campaigns', 'get_campaign', 'create_campaign', 'create_campaign_sequence', 'list_outbound_assets', 'render_cadence'] },
   { name: 'Flows (Architect)', icon: '🌳', tools: ['list_flows', 'get_flow', 'get_flow_configuration', 'list_prompts', 'render_flow', 'export_flow'] },
   { name: 'Flow Builder', icon: '🏗️', tools: ['build_flow', 'publish_flow', 'get_flow_job', 'unlock_flow'] },
   { name: 'Power', icon: '⚡', tools: ['genesys_api_call'] },

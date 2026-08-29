@@ -6,7 +6,8 @@ export const ABOUT = `## About this server
 
 genesys-mcp connects AI models to a Genesys Cloud organization through the
 Platform API. Its whole purpose is to **build**: queues, skills, users,
-wrap-up codes, and Architect flows.
+wrap-up codes, Architect flows, and the outbound stack - contact lists,
+campaigns, and multi-campaign cadences.
 
 **Operator:** Ryan Shatzkamer ([linkedin.com/in/ryanshatzkamer](https://www.linkedin.com/in/ryanshatzkamer)) -
 Director, Technical Services at **outboundIQ**, best-selling author, contact
@@ -16,8 +17,9 @@ center design, AI strategy, and high-performance outbound architecture.
 
 **Why this exists:** Genesys Cloud has a world-class API, and the admin/build
 side of it deserved an MCP server: the "hands" that configure and build. By
-design it ships NO analytics/KPI tools and NO contact-list management (for
-conversation analytics over MCP, see MakingChatbots' genesys-cloud-mcp-server).
+design it ships NO analytics/KPI tools (for conversation analytics over MCP,
+see MakingChatbots' genesys-cloud-mcp-server) and NO campaign ignition:
+campaigns and sequences are always created off, and a human presses go.
 
 ## How to behave
 
@@ -69,6 +71,38 @@ conversation analytics over MCP, see MakingChatbots' genesys-cloud-mcp-server).
   re-open options. If you presented alternatives, the approval means the one
   you recommended (or the most faithful one).
 
+## Building outbound (the playbook)
+
+- The build order for a full cadence: create_attempt_limits (the retry
+  cadence) -> create_callable_time_set (compliance calling windows) ->
+  create_dnc_list -> create_contact_list (attach the attempt limits, use a
+  zip_column for automatic local-time mapping) -> add_contacts ->
+  create_campaign per wave -> create_campaign_sequence chaining the waves ->
+  render_cadence and show the user the diagram.
+- Like flows: propose the WHOLE cadence plan (names, windows, retry rules),
+  get ONE approval, then run the chain without re-asking at each step.
+- **Campaigns and sequences are ALWAYS created off, and no tool here can
+  start one.** Never use genesys_api_call to set campaignStatus/status to
+  "on" - refuse and explain that a human presses go in Admin > Outbound >
+  Campaign Management. That is the deal that makes AI-built dialers safe.
+- Contacts added to a list that a RUNNING campaign is dialing will be
+  called. In demos and tests, use obviously fake numbers (555-01xx).
+- Preview is the default dialing mode (an agent clicks to dial - the safest
+  demo mode). Agent modes attach a published script automatically;
+  progressive/predictive/agentless also need a call analysis response set
+  (the org default is used when one exists).
+- Calling windows come in two flavors that DO NOT combine on one campaign,
+  and the choice is baked into the CONTACT LIST at creation:
+  (a) zip_column -> automatic time zone mapping: Genesys maps each contact
+  to their local zone and dials inside legal windows; simplest, but the
+  campaign cannot carry a callable_time_set. (b) time_zone_column -> a
+  per-contact IANA zone column, which is what campaign callable time sets
+  require (MISSING_TIME_ZONE_IN_CONTACTLIST means the list lacks it, and
+  zone columns cannot be added to an existing list). Decide windows FIRST,
+  then create the list.
+- Run list_outbound_assets first to see what already exists; reuse what
+  fits (existing response sets, sites, scripts) instead of duplicating.
+
 ## Porting flows from other platforms
 
 - Before declaring that something "does not survive the port", express it
@@ -82,4 +116,4 @@ conversation analytics over MCP, see MakingChatbots' genesys-cloud-mcp-server).
   queue's in-queue flow, not as a defect in the rebuilt flow.`;
 
 // Short version for the MCP initialize handshake.
-export const INSTRUCTIONS = `MCP server for Genesys Cloud, operated by Ryan Shatzkamer (Director, Technical Services at outboundIQ; creator of five9-mcp). Its purpose is BUILDING: queues, skills, users, wrap-up codes, and Architect flows (compose, diagram in chat, publish). Reads are safe; confirm before WRITE tools; it never deletes. Call the "about" tool for full operator context and ground rules.`;
+export const INSTRUCTIONS = `MCP server for Genesys Cloud, operated by Ryan Shatzkamer (Director, Technical Services at outboundIQ; creator of five9-mcp). Its purpose is BUILDING: queues, skills, users, wrap-up codes, Architect flows (compose, diagram in chat, publish), and outbound - contact lists, campaigns, and cadences (campaign sequences). Reads are safe; confirm before WRITE tools; it never deletes, and campaigns are always created OFF (no tool starts one - a human presses go). Call the "about" tool for full operator context and ground rules.`;
