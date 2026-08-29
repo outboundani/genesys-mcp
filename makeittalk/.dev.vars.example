@@ -1,0 +1,10 @@
+# Copy to .dev.vars (gitignored) for local `npm run dev`.
+ANTHROPIC_API_KEY=sk-ant-...
+# 64 hex chars: openssl rand -hex 32
+ENCRYPTION_KEY=
+STRIPE_SECRET_KEY=sk_test_...
+STRIPE_WEBHOOK_SECRET=whsec_...
+# Optional - without it, signups are auto-verified and reset emails are disabled.
+RESEND_API_KEY=
+APP_ORIGIN=http://localhost:8787
+ADMIN_EMAILS=ryan@getdylr.com

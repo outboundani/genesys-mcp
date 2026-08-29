@@ -1,0 +1,15 @@
+{
+  "name": "makeittalk",
+  "version": "0.1.0",
+  "description": "makeittalk.dev - paste a link, get an MCP. AI that reads API docs and builds working MCP servers.",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "npx wrangler dev",
+    "deploy": "npx wrangler deploy",
+    "migrate": "npx wrangler d1 migrations apply makeittalk --remote",
+    "migrate:local": "npx wrangler d1 migrations apply makeittalk --local",
+    "test": "node --test test/"
+  },
+  "license": "MIT"
+}

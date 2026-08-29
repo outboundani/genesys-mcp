@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="360" height="72" viewBox="0 0 360 72" fill="none">
+  <!-- makeittalk primary lockup: speech-bubble soundwave mark + lowercase wordmark -->
+  <rect x="8" y="10" width="52" height="40" rx="13" fill="#0c120d"/>
+  <path d="M21 50 L21 62 L35 50 Z" fill="#0c120d"/>
+  <rect x="20" y="24" width="5.5" height="12" rx="2.75" fill="#e9f4ea"/>
+  <rect x="30.5" y="18" width="5.5" height="24" rx="2.75" fill="#e9f4ea"/>
+  <rect x="41" y="27" width="5.5" height="6" rx="2.75" fill="#e9f4ea"/>
+  <text x="74" y="47" font-family="'Space Grotesk','Segoe UI',system-ui,sans-serif" font-weight="700" font-size="34" letter-spacing="-1.2" fill="#0c120d">makeittalk<tspan fill="#1c6b3c">.</tspan></text>
+</svg>

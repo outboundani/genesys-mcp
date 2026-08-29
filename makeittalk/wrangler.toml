@@ -1,0 +1,38 @@
+name = "makeittalk"
+main = "src/index.js"
+compatibility_date = "2026-08-01"
+
+# Custom domain routes - attach after `npx wrangler deploy` once DNS for
+# makeittalk.dev lives in the same Cloudflare account (see SETUP.md).
+# routes = [
+#   { pattern = "makeittalk.dev", custom_domain = true },
+#   { pattern = "www.makeittalk.dev", custom_domain = true },
+# ]
+
+# D1 database. Create it once with:
+#   npx wrangler d1 create makeittalk
+# then paste the database_id it prints below and run the migration:
+#   npx wrangler d1 migrations apply makeittalk --remote
+[[d1_databases]]
+binding = "DB"
+database_name = "makeittalk"
+database_id = "REPLACE_WITH_YOUR_D1_DATABASE_ID"
+
+# Static assets (logo, favicon, og image). Served automatically; every other
+# path falls through to the Worker.
+[assets]
+directory = "public"
+
+# Non-secret vars. Secrets are set with `npx wrangler secret put <NAME>`:
+#   ANTHROPIC_API_KEY     - console.anthropic.com key that powers generation
+#   ENCRYPTION_KEY        - 64 hex chars; encrypts stored API credentials at rest
+#                           (generate: openssl rand -hex 32)
+#   STRIPE_SECRET_KEY     - sk_live_... (or sk_test_...)
+#   STRIPE_WEBHOOK_SECRET - whsec_... for the /api/stripe/webhook endpoint
+#   RESEND_API_KEY        - optional; enables verification + reset emails
+[vars]
+APP_ORIGIN = "https://makeittalk.dev"
+ADMIN_EMAILS = "ryan@getdylr.com"
+MAIL_FROM = "makeittalk <hello@makeittalk.dev>"
+STRIPE_PRICE_PRO = "REPLACE_WITH_price_..."
+STRIPE_PRICE_SCALE = "REPLACE_WITH_price_..."
