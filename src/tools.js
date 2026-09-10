@@ -9,6 +9,7 @@ import { GenesysClient, GenesysError, REGIONS } from './genesys.js';
 import { ABOUT } from './about.js';
 import { validateFlowSpec, specToArchyYaml, specToMermaid, configToMermaid, FLOW_ACTIONS } from './flows.js';
 import { composeAttemptLimits, composeCallableTimeSet, composeContactList, cadenceToMermaid, DIALING_MODES } from './outbound.js';
+import { AVA_TOOLS, AVA_WRITE_TOOLS, AVA_TOOL_GROUP } from './ava-tools.js';
 
 // ---------- name → object resolution helpers ----------
 
@@ -941,6 +942,9 @@ export const TOOLS = [
       return gc.api(a.method, a.path, { body: a.body, query: a.query });
     },
   },
+
+  // ----- agentic virtual agents (see ava-tools.js) -----
+  ...AVA_TOOLS,
 ];
 
 // ---------- registry plumbing ----------
@@ -952,12 +956,14 @@ export function toolDefs() {
 export async function callTool(cfg, name, args = {}) {
   const tool = TOOLS.find((t) => t.name === name);
   if (!tool) throw new Error(`Unknown tool: ${name}`);
-  if (tool.genesys === false) return tool.handler(null, args);
+  // Handlers get (client, args, ctx); ctx is the resolved config, which also
+  // carries the KV binding the AVA workspace persists to.
+  if (tool.genesys === false) return tool.handler(null, args, cfg);
   if (!cfg.configured) {
     throw new GenesysError('This server is not connected to Genesys Cloud yet - open /setup, or set the GENESYS_CLIENT_ID / GENESYS_CLIENT_SECRET / GENESYS_REGION secrets.', 503);
   }
   const gc = new GenesysClient(cfg);
-  return tool.handler(gc, args);
+  return tool.handler(gc, args, cfg);
 }
 
 // UI metadata - which tools are writes, and how they group on the landing page.
@@ -968,6 +974,7 @@ export const WRITE_TOOLS = new Set([
   'create_callable_time_set', 'create_dnc_list', 'create_campaign',
   'create_campaign_sequence',
   'publish_flow', 'unlock_flow', 'genesys_api_call',
+  ...AVA_WRITE_TOOLS,
 ]);
 
 export const TOOL_GROUPS = [
@@ -978,6 +985,7 @@ export const TOOL_GROUPS = [
   { name: 'Outbound (Campaigns & Cadences)', icon: '📤', tools: ['list_contact_lists', 'get_contact_list', 'create_contact_list', 'add_contacts', 'create_attempt_limits', 'create_callable_time_set', 'create_dnc_list', 'list_campaigns', 'get_campaign', 'create_campaign', 'create_campaign_sequence', 'list_outbound_assets', 'render_cadence'] },
   { name: 'Flows (Architect)', icon: '🌳', tools: ['list_flows', 'get_flow', 'get_flow_configuration', 'list_prompts', 'render_flow', 'export_flow'] },
   { name: 'Flow Builder', icon: '🏗️', tools: ['build_flow', 'publish_flow', 'get_flow_job', 'unlock_flow'] },
+  AVA_TOOL_GROUP,
   { name: 'Power', icon: '⚡', tools: ['genesys_api_call'] },
 ];
 

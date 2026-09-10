@@ -102,7 +102,7 @@ export function landingPage(tools, cfg = { configured: true }) {
       ${cfg.configured
         ? '<a class="btn primary" href="#tools">🛠️ Browse the tools</a>'
         : '<a class="btn primary" href="/setup">⚙️ Finish setup - connect your Genesys org</a>'}
-      <a class="btn" href="https://github.com/ryanshatz/genesys-mcp">★ Star on GitHub</a>
+      <a class="btn" href="https://github.com/outboundani/genesys-mcp">★ Star on GitHub</a>
     </div>
     ${cfg.configured ? '' : `<p style="margin-top:1rem"><span class="pill">👋 This server isn't connected to a Genesys Cloud org yet - <a href="/setup">finish setup</a> (takes 1 minute, no terminal needed)</span></p>`}
   </div>

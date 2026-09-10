@@ -18,6 +18,8 @@ export async function loadConfig(env) {
     authToken: env.MCP_AUTH_TOKEN || stored?.authToken || '',
     source: envManaged ? 'env' : (stored ? 'kv' : 'none'),
     hasKv: Boolean(env.CONFIG),
+    // The same namespace also stores AVA lifecycle artifacts (ava:* keys).
+    kv: env.CONFIG || null,
   };
   cfg.configured = Boolean(cfg.clientId && cfg.clientSecret);
   return cfg;

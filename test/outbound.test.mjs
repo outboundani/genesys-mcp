@@ -102,7 +102,7 @@ test('outbound tools are registered, grouped, and write-flagged', () => {
     'list_outbound_assets', 'render_cadence',
   ];
   for (const n of expected) assert.ok(names.has(n), `missing tool ${n}`);
-  assert.equal(TOOLS.length, 41, 'v0.3.0 ships 41 tools');
+  assert.equal(TOOLS.length, 71, 'v0.4.0 ships 71 tools');
   for (const n of ['create_contact_list', 'add_contacts', 'create_campaign', 'create_campaign_sequence', 'create_attempt_limits', 'create_callable_time_set', 'create_dnc_list']) {
     assert.ok(WRITE_TOOLS.has(n), `${n} must be write-flagged`);
   }

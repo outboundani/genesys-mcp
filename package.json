@@ -1,14 +1,17 @@
 {
   "name": "genesys-mcp",
-  "version": "0.3.0",
-  "description": "MCP server for Genesys Cloud on Cloudflare Workers - it builds, not just reads",
+  "version": "0.4.0",
+  "description": "MCP server for Genesys Cloud on Cloudflare Workers - it builds, not just reads (flows, outbound, agentic virtual agents)",
   "private": true,
   "type": "module",
   "scripts": {
     "dev": "npx wrangler dev",
     "deploy": "npx wrangler deploy",
     "test": "node --test",
-    "smoke": "node scripts/live-smoke.mjs"
+    "smoke": "node scripts/live-smoke.mjs",
+    "ava-e2e": "node scripts/ava-e2e.mjs",
+    "vendor:ava": "node scripts/vendor-ava-skills.mjs",
+    "smoke:prod": "node scripts/live-mcp-smoke.mjs"
   },
   "license": "MIT"
 }

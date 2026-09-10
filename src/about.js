@@ -24,7 +24,10 @@ campaigns and sequences are always created off, and a human presses go.
 ## How to behave
 
 - Reads are always safe. **Confirm with the user before any write** (tools
-  badged WRITE), restating exactly what will be created or changed.
+  badged WRITE), restating exactly what will be created or changed. WRITE
+  means the Genesys org changes (or its tokens are spent); the AVA
+  workspace tools only save to this server's own storage and need no
+  confirmation.
 - **Create-only bias**: prefer creating new objects over modifying existing
   ones. Never delete anything - this server intentionally ships no delete
   tools, and genesys_api_call refuses DELETE.
@@ -103,6 +106,48 @@ campaigns and sequences are always created off, and a human presses go.
 - Run list_outbound_assets first to see what already exists; reuse what
   fits (existing response sets, sites, scripts) instead of duplicating.
 
+## Building agentic virtual agents (the AVA lifecycle)
+
+- The playbooks are Genesys' own AVA skills (purecloudlabs/genesys-ava-skills,
+  MIT), served verbatim by ava_playbook. **When the user wants to create,
+  update, test, evaluate, or review an AVA, load ava_playbook("dispatch")
+  FIRST and follow its routing**: design <-> knowledge -> build -> test ->
+  evaluate -> critique. Load each stage's playbook when you enter it; the
+  hosted-adapter table at the top maps the IDE-era file paths, tool names,
+  and sub-agents to this server's tools and workspace.
+- The design stage is an interview: one field per turn, never fabricate a
+  value the user has not given or approved. This is the one place the
+  "pick names yourself" rule above does NOT apply; the playbook governs.
+- State lives in the workspace (ava_workspace_put/get/list), keyed by the
+  AVA's slug, not in files. Save the design artifact before building and
+  the agent record after publishing so later stages can resume.
+- Build chain: create_ava -> create_ava_version (normalizes + pre-flights
+  the definition) -> publish_ava_version (TestReady) -> chat with it
+  (ava_chat_start/send) -> author scenarios -> evaluate -> critique.
+- **Production publish is the "press go" moment**: publish_ava_version with
+  production: true routes live traffic. Only after evaluate and critique
+  pass, and only when the user explicitly says yes to production.
+- Deploying the AVA: build_ava_bot_flow composes the Architect BOT FLOW
+  that runs the agent -> show the diagram -> publish_flow with its yaml.
+  Architect only accepts a ProductionReady agent there, so deployment
+  pulls the production publish forward; say so and get the user's yes.
+- **Bot flow OR IVR, not chained.** Genesys lets an inbound CALL flow
+  invoke a bot flow only when a paid non-legacy TTS engine is installed
+  (the default "Genesys TTS" is rejected), so this server deliberately does
+  not wire bot flows into IVRs and build_flow has no bot-flow choice. If a
+  user asks to "put the AVA behind option 1 of my IVR", explain that
+  limitation plainly, build the bot flow (deployable on its own, attached
+  to channels by an admin in Architect) and the IVR as two separate
+  things, and demonstrate the agent with ava_chat_start/ava_chat_send.
+- Data actions are the AVA's hands, and they are always REAL: list_data_actions
+  and get_data_action_schema before designing tools; create_data_action
+  for a new one (its integration must exist and be active). There are no
+  mock or example data actions here; if a real backend is missing, say so.
+- Knowledge: author cards into the workspace (kind "knowledge"), then
+  validate_knowledge -> ensure_knowledge_source -> upload_knowledge_documents
+  (confirm sync type with the user) -> get_knowledge_sync until ready ->
+  ensure_knowledge_setting -> attach as a KnowledgeSetting tool.
+
 ## Porting flows from other platforms
 
 - Before declaring that something "does not survive the port", express it
@@ -116,4 +161,4 @@ campaigns and sequences are always created off, and a human presses go.
   queue's in-queue flow, not as a defect in the rebuilt flow.`;
 
 // Short version for the MCP initialize handshake.
-export const INSTRUCTIONS = `MCP server for Genesys Cloud, operated by Ryan Shatzkamer (Director, Technical Services at outboundIQ; creator of five9-mcp). Its purpose is BUILDING: queues, skills, users, wrap-up codes, Architect flows (compose, diagram in chat, publish), and outbound - contact lists, campaigns, and cadences (campaign sequences). Reads are safe; confirm before WRITE tools; it never deletes, and campaigns are always created OFF (no tool starts one - a human presses go). Call the "about" tool for full operator context and ground rules.`;
+export const INSTRUCTIONS = `MCP server for Genesys Cloud, operated by Ryan Shatzkamer (Director, Technical Services at outboundIQ; creator of five9-mcp). Its purpose is BUILDING: queues, skills, users, wrap-up codes, Architect flows (compose, diagram in chat, publish), outbound - contact lists, campaigns, and cadences (campaign sequences) - and agentic virtual agents (AVA): the full lifecycle, design -> knowledge -> build -> test -> evaluate -> critique, using Genesys' own AVA playbooks. For ANY AVA work, call ava_playbook("dispatch") first and follow it; state lives in ava_workspace_*. Reads are safe; confirm before WRITE tools; it never deletes; campaigns are always created OFF and AVA versions publish as TestReady (production needs the user's explicit yes) - a human presses go. Call the "about" tool for full operator context and ground rules.`;

@@ -7,8 +7,9 @@ import { handleOAuth, checkAuth, unauthorized } from './oauth.js';
 import { INSTRUCTIONS } from './about.js';
 import { landingPage, setupPage } from './ui.js';
 import { loadConfig, saveConfig, randomToken } from './config.js';
+import { AVA_PROMPTS } from './ava-tools.js';
 
-const SERVER_INFO = { name: 'genesys-mcp', version: '0.2.0' };
+const SERVER_INFO = { name: 'genesys-mcp', version: '0.4.0' };
 const PROTOCOL_VERSIONS = ['2025-06-18', '2025-03-26', '2024-11-05'];
 
 const CORS_HEADERS = {
@@ -126,7 +127,7 @@ async function handleMessage(msg, cfg) {
         const requested = params?.protocolVersion;
         return rpcResult(id, {
           protocolVersion: PROTOCOL_VERSIONS.includes(requested) ? requested : PROTOCOL_VERSIONS[0],
-          capabilities: { tools: {} },
+          capabilities: { tools: {}, prompts: {} },
           serverInfo: SERVER_INFO,
           instructions: INSTRUCTIONS,
         });
@@ -135,6 +136,13 @@ async function handleMessage(msg, cfg) {
         return rpcResult(id, {});
       case 'tools/list':
         return rpcResult(id, { tools: toolDefs() });
+      case 'prompts/list':
+        return rpcResult(id, { prompts: AVA_PROMPTS.map(({ name, description }) => ({ name, description, arguments: [] })) });
+      case 'prompts/get': {
+        const p = AVA_PROMPTS.find((x) => x.name === params?.name);
+        if (!p) return rpcError(id, -32602, `Unknown prompt: ${params?.name}`);
+        return rpcResult(id, { description: p.description, messages: [{ role: 'user', content: { type: 'text', text: p.text } }] });
+      }
       case 'tools/call': {
         const name = params?.name;
         try {
