@@ -91,6 +91,12 @@ export class GenesysClient {
   async api(method, path, { body, query, _retried } = {}) {
     if (!path.startsWith('/api/')) throw new GenesysError(`API path must start with /api/ (got ${path})`, 400);
     const url = new URL(this.apiUrl + path);
+    // Defense in depth: if the URL parser rewrote the path (dot segments,
+    // backslashes, stripped control characters), refuse rather than send a
+    // request to a path nobody validated.
+    if (url.pathname !== path || url.host !== new URL(this.apiUrl).host) {
+      throw new GenesysError(`API path was rewritten by URL parsing (${path} -> ${url.pathname}); refusing to send.`, 400);
+    }
     for (const [k, v] of Object.entries(query || {})) {
       if (v !== undefined && v !== null && v !== '') url.searchParams.set(k, String(v));
     }

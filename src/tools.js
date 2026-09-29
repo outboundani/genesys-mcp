@@ -10,6 +10,7 @@ import { ABOUT } from './about.js';
 import { validateFlowSpec, specToArchyYaml, specToMermaid, configToMermaid, FLOW_ACTIONS } from './flows.js';
 import { composeAttemptLimits, composeCallableTimeSet, composeContactList, cadenceToMermaid, DIALING_MODES } from './outbound.js';
 import { AVA_TOOLS, AVA_WRITE_TOOLS, AVA_TOOL_GROUP } from './ava-tools.js';
+import { refusalFor, redactSecrets } from './rules.js';
 
 // ---------- name → object resolution helpers ----------
 
@@ -920,7 +921,7 @@ export const TOOLS = [
   // ----- power tool -----
   {
     name: 'genesys_api_call',
-    description: 'Call any Genesys Cloud Platform API endpoint directly (for endpoints without a typed tool). GET/POST/PUT/PATCH only - DELETE is refused by design. Treat any non-GET call as a write: describe the method, path, and body and confirm with the user first.',
+    description: 'Call a Genesys Cloud Platform API endpoint directly (for endpoints without a typed tool). GETs work anywhere under /api/v2/. Writes (POST/PUT/PATCH) are limited to an allowlist of the families the typed tools build: queues, skills, wrap-up codes, user routing skills, schedules, flows (not publish), outbound contact lists/attempt limits/callable time sets/DNC lists/campaigns/sequences, AVAs (not publish), knowledge, and data action drafts. Always refused: DELETE and delete-style endpoints, /api/v2/conversations (live calls), OAuth/credential/authorization writes, agent presence/routing status, flow or AVA publishing (use publish_flow / publish_ava_version), campaign rules/schedules/callbacks, any campaign or sequence status other than "off", and contacts written callable. Paths must be plain (no %, ;, \\, #, ?, whitespace, or dot segments). Secret-looking fields are redacted from responses. Treat any non-GET call as a write: describe the method, path, and body and confirm with the user first.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -933,13 +934,11 @@ export const TOOLS = [
       additionalProperties: false,
     },
     handler: async (gc, a) => {
-      if (!/^\/api\/v2\//.test(a.path)) throw new GenesysError('path must start with /api/v2/', 400);
-      // Campaign ignition is refused at the code level, not just by policy:
-      // no write may set an outbound campaign/sequence status to "on".
-      if (a.method !== 'GET' && /\/outbound\//.test(a.path) && /"(campaignStatus|status)"\s*:\s*"on"/.test(JSON.stringify(a.body || {}))) {
-        throw new GenesysError('Refused: this server never starts campaigns or sequences. A human presses go in Admin > Outbound > Campaign Management.', 403);
-      }
-      return gc.api(a.method, a.path, { body: a.body, query: a.query });
+      // Enforced in code, not just by policy: normalize, then allowlist
+      // (see rules.js). Runs before any URL is built.
+      const refusal = refusalFor(a.method, a.path, a.body, a.query);
+      if (refusal) throw new GenesysError(refusal, 403);
+      return redactSecrets(await gc.api(a.method, a.path, { body: a.body, query: a.query }));
     },
   },
 

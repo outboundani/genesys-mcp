@@ -119,7 +119,7 @@ if (runWrites) {
     }
     await run('get_contact_list', { contact_list: list.id }, (r) => ({ size: r.size, attemptLimits: r.attemptLimits?.name }));
   }
-  console.log('NOTE: artifacts left in place - clean up via the UI or genesys_api_call once verified.');
+  console.log('NOTE: artifacts left in place - clean up via the UI or scripts/cleanup-test-artifacts.mjs once verified (genesys_api_call never deletes).');
 }
 
 console.log(`\n${pass} passed, ${fail} failed${runWrites ? ' (writes exercised)' : ''}`);

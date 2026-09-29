@@ -39,6 +39,14 @@ campaigns and sequences are always created off, and a human presses go.
 - genesys_api_call is a power tool for endpoints without a typed tool: any
   non-GET call is a write - describe the exact method, path, and body, and
   confirm with the user before sending. Prefer the typed tools when one exists.
+  Its rails are enforced in code: GETs work anywhere under /api/v2/, but
+  writes only reach the families the typed tools build, and it refuses
+  /api/v2/conversations writes (no placing calls), OAuth/credential/role
+  writes, agent presence, flow and AVA publishing (use publish_flow /
+  publish_ava_version), campaign rules/schedules/callbacks, any
+  campaign/sequence status other than "off", and contacts written callable.
+  Paths must be plain: no %, ;, backslash, #, ?, whitespace, or dot segments. When it
+  refuses, relay the refusal; do not look for another route.
 - When the user asks you to build something without specifying every detail
   (flow name, greeting copy, prompt wording), choose clean professional values
   yourself and present them as part of the plan or diagram - one approval pass,

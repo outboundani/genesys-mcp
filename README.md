@@ -56,7 +56,7 @@ Then try: *"check the connection and list my queues."*
 | 🌳 Flows (Architect) | `list_flows`, `get_flow`, `get_flow_configuration`, `list_prompts`, `render_flow`, `export_flow` |
 | 🏗️ Flow Builder | `build_flow`, `publish_flow` ✏️, `get_flow_job`, `unlock_flow` ✏️ |
 | 🧠 Agentic Virtual Agents (AVA) | `ava_playbook`, `list_avas`, `get_ava`, `create_ava` ✏️, `get_ava_version`, `create_ava_version` ✏️, `publish_ava_version` ✏️, `get_ava_publish_job`, `list_data_actions`, `get_data_action_schema`, `create_data_action` ✏️, `list_knowledge_assets`, `validate_knowledge`, `ensure_knowledge_source` ✏️, `upload_knowledge_documents` ✏️, `get_knowledge_sync`, `ensure_knowledge_setting` ✏️, `ava_chat_start` ✏️, `ava_chat_send` ✏️, `ava_chat_end`, `ava_run_scripted_scenario` ✏️, `ava_record_verdicts`, `ava_validate_trajectory`, `ava_estimate_eval`, `ava_scorecard`, `ava_critique_report`, `ava_workspace_put`, `ava_workspace_get`, `ava_workspace_list`, `build_ava_bot_flow` |
-| ⚡ Power | `genesys_api_call` ✏️ (any Platform API endpoint; GET/POST/PUT/PATCH only) |
+| ⚡ Power | `genesys_api_call` ✏️ (GETs anywhere under /api/v2/; writes only to an allowlist of the families above; see [Security model](#security-model)) |
 
 ✏️ = writes to your Genesys org (or spends its tokens); the AVA workspace tools only save to the server's own storage. Everything resolves names to GUIDs for you, so "the Weekend Support queue" just works.
 
@@ -101,6 +101,11 @@ Differences from the IDE harness: knowledge uploads are text formats only (Markd
 - The AI can only do what the **OAuth client's role** allows. You scope it; Genesys enforces it.
 - The MCP endpoint requires the access key (raw Bearer or the built-in OAuth 2.1 flow for connectors).
 - No delete tools exist, and `genesys_api_call` refuses `DELETE` outright.
+- `genesys_api_call` checks every request in code before a URL is built ([src/rules.js](src/rules.js), unit tested):
+  - **Normalize first.** The path must start with `/api/v2/` and may not contain `%`, `;`, `\`, `#`, `?`, whitespace, or empty/`.`/`..` segments. Query keys are plain identifiers with no duplicates (case-insensitive) and scalar values only. The client also refuses to send if URL parsing would rewrite the path.
+  - **Then allowlist writes.** POST/PUT/PATCH only reach the families the typed tools build: queues, skills, wrap-up codes, user routing skills, schedules and schedule groups, flows (not publish), outbound contact lists, attempt limits, callable time sets, DNC lists (add only), campaigns, sequences, AVAs (not publish), knowledge, and data action drafts. GETs stay broad.
+  - **Always refused:** delete-style endpoints by any verb; every write under `/api/v2/conversations` (placing or controlling live calls); OAuth, token, credential, and authorization/role writes; agent presence and routing status; flow and AVA publishing (only `publish_flow` and `publish_ava_version` do that); data action execute/test; campaign rules, schedules, callbacks, and IVR/DNIS routing; any campaign or sequence status other than `"off"` (key and value matched case-insensitively, at any depth); and contacts written callable.
+  - Secret-looking fields (passwords, secrets, tokens, API keys, credentials) are redacted from its responses.
 
 ### Scoping the role
 
