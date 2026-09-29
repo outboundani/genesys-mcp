@@ -122,6 +122,7 @@ export const ALLOWED_WRITE_SUMMARY = WRITE_FAMILIES.map(([name]) => name).join('
 // ---------- explicit refusals (checked before the allowlist for precise messages) ----------
 
 const LIVE = /^\/api\/v2\/conversations(\/|$)/i;
+const CREDENTIAL_READS = /^\/api\/v2\/(oauth|tokens|integrations\/credentials|authorization\/(roles|subjects|permissions))(\/|$)/i;
 const CREDENTIALS = /^\/api\/v2\/(oauth|authorization|tokens|integrations\/credentials)(\/|$)/i;
 const AGENT_LIVE = /^\/api\/v2\/users\/[^/]+\/(presence|routingstatus|station)(\/|$)|^\/api\/v2\/(users\/[^/]+\/presences|apps\/[^/]+\/presences|stations)(\/|$)|^\/api\/v2\/presence\//i;
 const FLOW_PUBLISH = /^\/api\/v2\/flows\/(jobs|actions\/(publish|deactivate|revert))(\/|$)/i;
@@ -147,6 +148,9 @@ export function refusalFor(method, path, body, query) {
   const queryErr = checkQuery(query);
   if (queryErr) return queryErr;
 
+  // Credential and role reads are refused too (matches ringcx-mcp): OAuth clients,
+  // tokens, and role grants are not contact center config.
+  if (m === 'GET' && CREDENTIAL_READS.test(path)) return 'Refused: OAuth clients, tokens, credentials, and authorization/role data are out of scope for the raw tool, reads included. View those in Admin > Integrations / Roles.';
   if (m === 'GET') return null; // reads stay broad once the path is clean; responses are redacted
 
   // 2. Body shape.

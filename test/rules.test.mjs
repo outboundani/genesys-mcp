@@ -75,7 +75,7 @@ test('query validation: identifiers only, no duplicates or case variants, scalar
 
 test('GETs stay broad once the path is clean', () => {
   for (const p of ['/api/v2/routing/queues', `/api/v2/outbound/campaigns/${G}`, '/api/v2/conversations', `/api/v2/conversations/calls/${G}`,
-    '/api/v2/oauth/clients', '/api/v2/authorization/divisions', '/api/v2/analytics/conversations/details/jobs',
+    '/api/v2/authorization/divisions', '/api/v2/analytics/conversations/details/jobs',
     `/api/v2/integrations/actions/custom_-_${G}/schemas/inputschema.json`, '/api/v2/users/me']) allowed('GET', p);
 });
 
@@ -270,8 +270,9 @@ test('genesys_api_call handler: refuses before calling the API, redacts what com
   await assert.rejects(() => power.handler(gc, { method: 'GET', path: '/api/v2/x/../oauth/clients' }), /segments/);
   await assert.rejects(() => power.handler(gc, { method: 'PATCH', path: `/api/v2/outbound/campaigns/${G}`, body: { campaignStatus: 'ON ' } }), /never starts campaigns/);
   assert.deepEqual(calls, []);
-  assert.deepEqual(await power.handler(gc, { method: 'GET', path: '/api/v2/oauth/clients' }), { id: G, secret: '[redacted]', tokenCount: 3 });
-  assert.deepEqual(calls, ['GET /api/v2/oauth/clients']);
+  assert.deepEqual(await power.handler(gc, { method: 'GET', path: '/api/v2/integrations/actions' }), { id: G, secret: '[redacted]', tokenCount: 3 });
+  assert.deepEqual(calls, ['GET /api/v2/integrations/actions']);
+  await assert.rejects(() => power.handler(gc, { method: 'GET', path: '/api/v2/oauth/clients' }), /out of scope/);
 });
 
 test('client refuses to send when URL parsing rewrites the path (defense in depth)', async () => {
@@ -281,4 +282,13 @@ test('client refuses to send when URL parsing rewrites the path (defense in dept
   await assert.rejects(() => gc.api('GET', '/api/v2/users\\..\\oauth'), /rewritten/);
   await assert.rejects(() => gc.api('GET', '/api/v2/x/.\t./users'), /rewritten/);
   await assert.rejects(() => gc.api('GET', '/api/v2/us ers'), /rewritten/);
+});
+
+test('credential and role reads are refused (GET included), ordinary reads stay open', () => {
+  for (const p of ['/api/v2/oauth/clients', '/api/v2/authorization/roles', '/api/v2/authorization/subjects/me', '/api/v2/tokens/me', '/api/v2/integrations/credentials']) {
+    assert.match(refusalFor('GET', p) || '', /Refused/, p);
+  }
+  assert.equal(refusalFor('GET', '/api/v2/routing/queues'), null);
+  assert.equal(refusalFor('GET', '/api/v2/integrations/actions'), null);
+  assert.equal(refusalFor('GET', '/api/v2/authorization/divisions'), null);
 });
