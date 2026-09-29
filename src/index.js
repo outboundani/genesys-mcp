@@ -19,6 +19,14 @@ const CORS_HEADERS = {
   'Access-Control-Max-Age': '86400',
 };
 
+// Reject oversized request bodies before we buffer/parse them, so a large
+// payload can't burn Worker CPU/memory in request.json().
+const MAX_BODY_BYTES = 1_000_000;
+function bodyTooLarge(request) {
+  const len = Number(request.headers.get('Content-Length'));
+  return Number.isFinite(len) && len > MAX_BODY_BYTES;
+}
+
 export default {
   async fetch(request, env) {
     const res = await route(request, env);
