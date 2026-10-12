@@ -79,6 +79,39 @@ test('ids from the caller are validated before any path is built', async () => {
   });
 });
 
+test('callTool: arguments must be an object, unknown tools are tool errors', async () => {
+  await withGenesys({}, async (cfg, calls) => {
+    for (const bad of [[], 'x', 7, true]) {
+      await assert.rejects(() => callTool(cfg, 'get_flow_job', bad), (e) => e instanceof GenesysError && /must be a JSON object/.test(e.message), JSON.stringify(bad));
+    }
+    await assert.rejects(() => callTool(cfg, 'list_queues_now', {}), (e) => e instanceof GenesysError && /Unknown tool/.test(e.message));
+    // null means "no arguments": the handler runs and reports the missing field itself.
+    await assert.rejects(() => callTool(cfg, 'publish_flow', null), /Provide spec or yaml/);
+    assert.deepEqual(apiCalls(calls), []);
+  });
+});
+
+test('publish_flow refuses spec and yaml together, and an empty or non-string yaml', async () => {
+  const spec = { name: 'X', greeting: 'Hi', menu: { prompt: 'p', choices: [{ dtmf: '1', action: 'disconnect' }] } };
+  await withGenesys({}, async (cfg, calls) => {
+    await assert.rejects(() => callTool(cfg, 'publish_flow', { spec, yaml: 'inboundCall:\n  name: Y\n' }), /not both/);
+    await assert.rejects(() => callTool(cfg, 'publish_flow', { yaml: { inboundCall: { name: 'Y' } } }), /non-empty string/);
+    await assert.rejects(() => callTool(cfg, 'publish_flow', { yaml: '   ' }), /non-empty string/);
+    assert.deepEqual(apiCalls(calls), [], 'no flow job may be created');
+  });
+});
+
+test('genesys_api_call: a lowercase or padded method is refused before any request', async () => {
+  await withGenesys({ 'GET /api/v2/routing/queues': () => ({ entities: [] }) }, async (cfg, calls) => {
+    for (const method of ['get', 'patch', 'POST ']) {
+      await assert.rejects(() => callTool(cfg, 'genesys_api_call', { method, path: '/api/v2/routing/queues' }), /exactly GET, POST, PUT, or PATCH/, method);
+    }
+    assert.deepEqual(apiCalls(calls), []);
+    await callTool(cfg, 'genesys_api_call', { method: 'GET', path: '/api/v2/routing/queues' });
+    assert.deepEqual(apiCalls(calls), ['GET /api/v2/routing/queues']);
+  });
+});
+
 test('get_flow_configuration redacts secret keys and name/value secret pairs', async () => {
   const flowConfig = { name: 'Main IVR', variables: [{ name: 'apiKey', value: 'K3y-Value-1234567890' }, { name: 'greeting', value: 'Hello' }], settings: { clientSecret: 'shh-0123456789' } };
   await withGenesys({ [`GET /api/v2/flows/${G}/latestconfiguration`]: () => flowConfig }, async (cfg) => {

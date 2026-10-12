@@ -293,6 +293,15 @@ test('credential and role reads are refused (GET included), ordinary reads stay 
   assert.equal(refusalFor('GET', '/api/v2/authorization/divisions'), null);
 });
 
+test('the raw tool method must be exactly GET, POST, PUT or PATCH (no case folding, no padding)', () => {
+  for (const bad of ['get', 'Get', 'patch', 'POST ', ' PUT', 'HEAD', 'OPTIONS', 'CONNECT', '', null, undefined, 1, ['GET'], { m: 'GET' }]) {
+    refused(bad, '/api/v2/routing/queues', undefined, undefined, /exactly GET, POST, PUT, or PATCH/);
+  }
+  for (const del of ['DELETE', 'delete', ' Delete ']) refused(del, '/api/v2/routing/queues', undefined, undefined, /no deletes/);
+  allowed('GET', '/api/v2/routing/queues');
+  allowed('POST', '/api/v2/routing/queues', { name: 'Q' });
+});
+
 test('redactSecrets also covers header-style keys and credentials inside string values', () => {
   const r = redactSecrets({
     config: { request: { headers: { Authorization: 'Bearer abc', 'X-Api-Key': 'k1', 'Proxy-Authorization': 'p', Cookie: 'c=1', 'Private Key': 'pk', accessKey: 'ak' } } },

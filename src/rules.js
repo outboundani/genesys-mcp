@@ -138,9 +138,13 @@ const CONTACT_PATH = /^\/api\/v2\/outbound\/contactlists\/[^/]+\/contacts(\/[^/]
 const IGNITION_MSG = 'Refused: this server never starts campaigns or sequences, and never dials. Campaign and sequence writes must set campaignStatus/status to "off"; a human presses go in Admin > Outbound > Campaign Management.';
 
 export function refusalFor(method, path, body, query) {
-  const m = String(method || '').toUpperCase();
-  if (m === 'DELETE') return 'Refused: this server ships no deletes, and the raw tool refuses DELETE by design.';
-  if (!['GET', 'POST', 'PUT', 'PATCH'].includes(m)) return `Refused: method ${m || '(none)'} is not allowed. Use GET, POST, PUT, or PATCH.`;
+  if (String(method ?? '').trim().toUpperCase() === 'DELETE') return 'Refused: this server ships no deletes, and the raw tool refuses DELETE by design.';
+  // Exactly one of the four verbs, as written: the checks below and the request
+  // that is sent must agree on the method, so no case folding or trimming.
+  if (typeof method !== 'string' || !['GET', 'POST', 'PUT', 'PATCH'].includes(method)) {
+    return `Refused: method must be exactly GET, POST, PUT, or PATCH (got ${JSON.stringify(method ?? null)?.slice(0, 40)}).`;
+  }
+  const m = method;
 
   // 1. Normalize: refuse anything that could be read two ways.
   const pathErr = checkPath(path);

@@ -797,7 +797,7 @@ export const TOOLS = [
   },
   {
     name: 'publish_flow',
-    description: 'Create AND publish an Architect inbound call flow via the flow-jobs pipeline (validates server-side). Pass the spec from build_flow, or raw Archy YAML. CAUTION: if the flow name matches an existing flow of the same type, Genesys UPDATES that flow, so use a fresh name unless an update is explicitly intended. Waits up to ~20s; if the job is still running, poll with get_flow_job.',
+    description: 'Create AND publish an Architect inbound call flow via the flow-jobs pipeline (validates server-side). Pass the spec from build_flow, or raw Archy YAML (spec OR yaml, not both). CAUTION: if the flow name matches an existing flow of the same type, Genesys UPDATES that flow, so use a fresh name unless an update is explicitly intended. Waits up to ~20s; if the job is still running, poll with get_flow_job.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -807,6 +807,9 @@ export const TOOLS = [
       additionalProperties: false,
     },
     handler: async (gc, a) => {
+      // Both at once is ambiguous (which one would be published?), so refuse it.
+      if (a.spec !== undefined && a.yaml !== undefined) throw new GenesysError('Pass spec or yaml, not both.', 400);
+      if (a.yaml !== undefined && (typeof a.yaml !== 'string' || !a.yaml.trim())) throw new GenesysError('yaml must be a non-empty string.', 400);
       let yaml = a.yaml;
       if (!yaml) {
         if (!a.spec) throw new GenesysError('Provide spec or yaml', 400);
@@ -956,7 +959,10 @@ export function toolDefs() {
 
 export async function callTool(cfg, name, args = {}) {
   const tool = TOOLS.find((t) => t.name === name);
-  if (!tool) throw new Error(`Unknown tool: ${name}`);
+  if (!tool) throw new GenesysError(`Unknown tool: ${name}`, 404);
+  // Arguments must be an object (absent or null means none), never an array or a scalar.
+  if (args === undefined || args === null) args = {};
+  if (typeof args !== 'object' || Array.isArray(args)) throw new GenesysError('Tool arguments must be a JSON object.', 400);
   // Handlers get (client, args, ctx); ctx is the resolved config, which also
   // carries the KV binding the AVA workspace persists to.
   if (tool.genesys === false) return tool.handler(null, args, cfg);
