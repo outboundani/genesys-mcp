@@ -138,13 +138,16 @@ async function sendTurnDraining(gc, agentId, sessionId, { text, previousTurnId, 
   let turn = await gc.post(`${sessionsBase(agentId)}/${sessionId}/turns`, buildTurnRequest({ text, previousTurnId, version }));
   let noops = 0;
   let truncated = false;
+  let error;
   while (turn?.nextAction?.type === 'NoOp' && noops < MAX_NOOPS) {
     if (Date.now() > deadline) { truncated = true; break; }
     noops++;
-    const cont = await gc.post(`${sessionsBase(agentId)}/${sessionId}/turns`, buildTurnRequest({ text: null, previousTurnId: turn.id, version }));
+    // A failed continuation must not hide the tool calls (DataActions) that already ran.
+    let cont;
+    try { cont = await gc.post(`${sessionsBase(agentId)}/${sessionId}/turns`, buildTurnRequest({ text: null, previousTurnId: turn.id, version })); } catch (e) { truncated = true; error = e.message; break; }
     turn = mergeTurn(turn, cont);
   }
-  return { ...summarizeTurn(turn), ...(truncated ? { truncated: true } : {}) };
+  return { ...summarizeTurn(turn), ...(truncated ? { truncated: true } : {}), ...(error ? { error } : {}) };
 }
 
 // ---------- chat (preview sessions against a published version) ----------
@@ -355,9 +358,12 @@ export const AVA_TOOLS = [
       additionalProperties: false,
     },
     handler: async (gc, a) => {
+      // production must be a real boolean or absent: the string "false" is truthy
+      // and would otherwise publish to production.
+      if (a.production !== undefined && typeof a.production !== 'boolean') throw new GenesysError('production must be true or false (a boolean, not a string).', 400);
       pathId('version', a.version);
       const ava = await resolveAva(gc, a.ava);
-      const status = a.production ? 'ProductionReady' : 'TestReady';
+      const status = a.production === true ? 'ProductionReady' : 'TestReady';
       const base = `${AVA_BASE}/${pathId('ava id', ava.id)}/versions/${pathId('version', a.version)}/jobs`;
       const job = await gc.post(base, { virtualAgentVersion: { status } });
       let state = job;
@@ -512,7 +518,7 @@ export const AVA_TOOLS = [
   // ----- chat with a published version -----
   {
     name: 'ava_chat_start',
-    description: 'Start a text chat session with a published (TestReady or ProductionReady) AVA version and return its greeting and the first turn id. Use for manual testing or the evaluate stage\'s actor loop. Each session is token-billed by Genesys.',
+    description: 'Start a text chat session with a published (TestReady or ProductionReady) AVA version and return its greeting, the first turn id, and every tool call and tool result the agent ran during that first turn (DataAction tools can reach external systems). Use for manual testing or the evaluate stage\'s actor loop. Each session is token-billed by Genesys.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -526,8 +532,16 @@ export const AVA_TOOLS = [
     },
     handler: async (gc, a) => {
       const ava = await resolveAva(gc, a.ava);
-      const r = await startSession(gc, ava.id, { version: a.version, language: a.language, startContext: a.start_context });
-      return { agentId: ava.id, sessionId: r.sessionId, greeting: r.agentText, turnId: r.turnId, nextAction: r.nextAction, isTerminal: r.isTerminal, note: 'Call ava_chat_send with ava = this agentId (skips a name lookup per turn), session_id, previous_turn_id = turnId, and version.' };
+      const r = await startSession(gc, ava.id, { version: a.version, language: a.language, startContext: a.start_context, deadline: Date.now() + 40000 });
+      // The first turn can run DataAction tools, so what ran is always returned.
+      return {
+        agentId: ava.id, sessionId: r.sessionId, greeting: r.agentText, turnId: r.turnId, nextAction: r.nextAction, isTerminal: r.isTerminal,
+        toolCalls: r.toolCalls, toolResults: r.toolResults, guardrails: r.guardrails, errors: r.errors,
+        ...(r.truncated ? { truncated: true } : {}), ...(r.error ? { error: r.error } : {}),
+        note: r.truncated
+          ? 'The agent was still working when this call stopped (see error, if any). Call ava_chat_send with a short follow-up (for example "continue") to get the rest; use ava = this agentId, session_id, previous_turn_id = turnId, and version.'
+          : 'Call ava_chat_send with ava = this agentId (skips a name lookup per turn), session_id, previous_turn_id = turnId, and version.',
+      };
     },
   },
   {

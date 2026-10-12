@@ -256,6 +256,22 @@ test('runScriptedAttempt plays fixed_user turns, records fixed_agent matches, an
   assert.equal(r.transcript.filter((t) => t.role === 'user').length, 2);
 });
 
+test('runScriptedAttempt: a turn whose continuation failed ends as error and keeps the tool calls that ran', async () => {
+  const replies = [
+    { turnId: 'g', agentText: 'Hi', toolCalls: [], toolResults: [], guardrails: null, errors: [], nextAction: 'WaitForInput', isTerminal: false },
+    { turnId: 'a1', agentText: 'Checking', toolCalls: [{ name: 'GetBalance', input: { code: '1' } }], toolResults: [], guardrails: null, errors: [], nextAction: 'NoOp', isTerminal: false, truncated: true, error: 'POST turns failed: upstream timeout' },
+  ];
+  let i = 0;
+  const r = await runScriptedAttempt(
+    { turns: [{ source: 'fixed_user', text: 'balance?' }, { source: 'fixed_user', text: 'more' }] },
+    { startSession: async () => replies[i++], sendTurn: async () => replies[i++] },
+  );
+  assert.equal(r.ended, 'error');
+  assert.deepEqual(r.toolCalls.map((t) => t.name), ['GetBalance']);
+  assert.ok(r.transcript.some((t) => t.role === 'system' && /upstream timeout/.test(t.text)));
+  assert.equal(i, 2, 'no further turn is sent after the failure');
+});
+
 // ---------- bot flow composer + inbound wiring ----------
 
 test('avaBotFlowToArchyYaml emits a virtual-agent-enabled bot flow calling the agent', () => {

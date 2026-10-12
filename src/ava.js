@@ -592,7 +592,8 @@ export async function runScriptedAttempt({ turns, maxTurns = 10, referenceTrajec
     }
     if (summary.guardrails) guardrailEvents.push(summary.guardrails);
     if (summary.errors?.length) transcript.push({ role: 'system', text: `errors: ${JSON.stringify(summary.errors).slice(0, 500)}` });
-    if (summary.truncated) transcript.push({ role: 'system', text: 'agent turn truncated: the tool time budget ran out while the agent was still working' });
+    if (summary.error) transcript.push({ role: 'system', text: `turn error: ${summary.error}` });
+    else if (summary.truncated) transcript.push({ role: 'system', text: 'agent turn truncated: the tool time budget ran out while the agent was still working' });
     return Boolean(summary.truncated);
   };
   let previousTurnId = greeting.turnId;
@@ -600,6 +601,9 @@ export async function runScriptedAttempt({ turns, maxTurns = 10, referenceTrajec
   let userTurns = 0;
   let terminal = greeting.isTerminal;
   let truncated = record(greeting);
+  // A continuation that failed (summary.error) ends the attempt as an error, not a time budget cut.
+  let failed = Boolean(greeting.error);
+  if (failed) ended = 'error';
   for (const turn of turns) {
     if (turn.source === 'fixed_agent') {
       // An expectation about the agent's LAST reply, so it is recorded even
@@ -609,6 +613,7 @@ export async function runScriptedAttempt({ turns, maxTurns = 10, referenceTrajec
       responseMatch.push({ id: `rm-${responseMatch.length + 1}`, dimension: 'responseMatch', expected: turn.text, actual: lastAgentText, verdict: 'pending', reason: truncated ? 'the actual reply was cut off by the time budget; judge what was captured' : 'judge semantic equivalence of actual vs expected, then set verdict pass/fail' });
       continue;
     }
+    if (failed) { ended = 'error'; break; }
     if (truncated) { ended = 'time_budget'; break; }
     if (terminal) { ended = 'terminal'; break; }
     if (turn.source !== 'fixed_user') {
@@ -627,6 +632,7 @@ export async function runScriptedAttempt({ turns, maxTurns = 10, referenceTrajec
       break;
     }
     truncated = record(summary);
+    if (summary.error) { ended = 'error'; break; }
     previousTurnId = summary.turnId;
     lastAgentText = summary.agentText;
     terminal = summary.isTerminal;

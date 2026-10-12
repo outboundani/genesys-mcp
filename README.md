@@ -19,7 +19,7 @@ The flow builder composes real Archy YAML, shows you the flow as a Mermaid diagr
 
 - **No analytics or KPI tools.** That lane is already covered; for conversation analytics over MCP, check out [MakingChatbots' genesys-cloud-mcp-server](https://github.com/MakingChatbots/genesys-cloud-mcp-server).
 - **No campaign ignition.** Campaigns and sequences are always created **off**, and no tool here can start one. The AI builds the machine; a human presses go.
-- **No silent production agents.** AVA versions publish as **TestReady** (chat, test, evaluate). Publishing to production, which routes live traffic, needs `production: true` and your explicit yes.
+- **No silent production agents.** AVA versions publish as **TestReady** (chat, test, evaluate). Publishing to production, which routes live traffic, needs `production: true` (a real boolean: anything else, such as the string `"false"`, is refused) and your explicit yes.
 - **No mocks.** Every data action an agent can call is a real integration in your org. There are no fake backends, sample responses, or demo stubs.
 - **No deletes.** There are no delete tools, and the raw API tool refuses `DELETE`. Create-first by design.
 

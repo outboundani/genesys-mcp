@@ -104,6 +104,57 @@ test('export_flow redacts secrets in the downloaded YAML and says the export is 
   assert.match(toolDefs().find((t) => t.name === 'export_flow').description, /\[redacted\].*NOT a faithful backup/s);
 });
 
+test('publish_ava_version: production must be a real boolean; the string "false" never publishes to production', async () => {
+  const bodies = [];
+  await withGenesys({
+    [`GET /api/v2/agentic/virtualagents/${G}`]: () => ({ id: G, name: 'Bot' }),
+    [`POST /api/v2/agentic/virtualagents/${G}/versions/1/jobs`]: (_u, init) => { bodies.push(JSON.parse(init.body)); return { id: 'j1', status: 'Succeeded' }; },
+  }, async (cfg, calls) => {
+    for (const bad of ['false', 'true', 0, 1, null]) {
+      await assert.rejects(() => callTool(cfg, 'publish_ava_version', { ava: G, version: '1', production: bad }), /must be true or false/, String(bad));
+    }
+    assert.deepEqual(apiCalls(calls), [], 'nothing is sent for a non-boolean production');
+    await callTool(cfg, 'publish_ava_version', { ava: G, version: '1' });
+    await callTool(cfg, 'publish_ava_version', { ava: G, version: '1', production: false });
+    await callTool(cfg, 'publish_ava_version', { ava: G, version: '1', production: true });
+    assert.deepEqual(bodies.map((b) => b.virtualAgentVersion.status), ['TestReady', 'TestReady', 'ProductionReady']);
+  });
+});
+
+// A fake AVA chat: the first turn is a NoOp that ran a tool; the continuation answers or fails.
+function avaChatRoutes({ continuationFails = false } = {}) {
+  let turn = 0;
+  return {
+    [`GET /api/v2/agentic/virtualagents/${G}`]: () => ({ id: G, name: 'Bot' }),
+    [`POST /api/v2/apps/agentic/virtualagents/${G}/sessions`]: () => ({ id: 'sess-1' }),
+    [`POST /api/v2/apps/agentic/virtualagents/${G}/sessions/sess-1/turns`]: () => {
+      turn++;
+      if (turn === 1) return { id: 't1', prompts: { text: { segments: [{ text: 'One moment.' }] } }, events: { toolCalls: [{ name: 'LookupAccount', input: { phone: 'x' } }], toolResults: [{ name: 'LookupAccount', output: 'ok' }] }, nextAction: { type: 'NoOp' } };
+      if (continuationFails) return new Response(JSON.stringify({ message: 'upstream timeout' }), { status: 503 });
+      return { id: 't2', prompts: { text: { segments: [{ text: 'Found it.' }] } }, events: {}, nextAction: { type: 'WaitForInput' } };
+    },
+  };
+}
+
+test('ava_chat_start returns the tool calls and results of the first turn', async () => {
+  await withGenesys(avaChatRoutes(), async (cfg) => {
+    const r = await callTool(cfg, 'ava_chat_start', { ava: G, version: '1.0' });
+    assert.equal(r.greeting, 'One moment. Found it.');
+    assert.deepEqual(r.toolCalls, [{ name: 'LookupAccount', input: { phone: 'x' } }]);
+    assert.deepEqual(r.toolResults, [{ name: 'LookupAccount', output: 'ok' }]);
+    assert.equal(r.truncated, undefined);
+  });
+});
+
+test('a failed chat continuation keeps the tool calls that already ran', async () => {
+  await withGenesys(avaChatRoutes({ continuationFails: true }), async (cfg) => {
+    const r = await callTool(cfg, 'ava_chat_start', { ava: G, version: '1.0' });
+    assert.deepEqual(r.toolCalls, [{ name: 'LookupAccount', input: { phone: 'x' } }]);
+    assert.equal(r.truncated, true);
+    assert.match(r.error, /upstream timeout/);
+  });
+});
+
 test('a knowledge upload ticket on a foreign host fails the upload and cancels the sync', async () => {
   await withGenesys({
     'POST /api/v2/knowledge/sources/src-1/synchronizations': () => ({ id: 'sync-1' }),
