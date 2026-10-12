@@ -50,7 +50,48 @@ export function normalizeRegion(region) {
   throw new GenesysError(`Unknown Genesys Cloud region "${String(region).slice(0, 60)}". Use the domain from your login address, one of: ${REGIONS.join(', ')}.`, 400, 'unknown_region');
 }
 
-// clientId|region → { token, exp (ms epoch) }
+// An id interpolated into an API path must be one plain segment, so a value
+// like "x/../other" (or "x/publish") can never reach a different endpoint.
+export function pathId(label, value) {
+  const v = typeof value === 'number' && Number.isFinite(value) ? String(value) : value;
+  if (typeof v !== 'string' || !/^[A-Za-z0-9._-]{1,128}$/.test(v) || v === '.' || v === '..') {
+    throw new GenesysError(`${label} must be a plain id (letters, digits, dot, dash, underscore; no slashes).`, 400, 'bad_id');
+  }
+  return v;
+}
+
+// Every request has a deadline, so a hung connection cannot hold a tool call
+// (and the MCP client waiting on it) open forever.
+export const REQUEST_TIMEOUT_MS = 30_000;
+export const FILE_TIMEOUT_MS = 60_000;
+
+async function timedFetch(url, init, ms, what) {
+  try {
+    return await fetch(url, { ...init, signal: AbortSignal.timeout(ms) });
+  } catch (e) {
+    if (e?.name === 'TimeoutError' || e?.name === 'AbortError') {
+      throw new GenesysError(`${what} timed out after ${Math.round(ms / 1000)} s; the outcome is unknown, so check before retrying a write.`, 504, 'timeout');
+    }
+    throw e;
+  }
+}
+
+// Presigned file URLs Genesys hands back (flow job upload, flow export download,
+// knowledge upload) may only point at Amazon S3 or a Genesys host in the org's
+// own region (for example api-downloads.<region>). Anything else is refused.
+export function isFileHostAllowed(region, host) {
+  const h = String(host || '').toLowerCase();
+  if (!h || h.endsWith('.')) return false;
+  if (/^([a-z0-9-]+\.)*s3([.-][a-z0-9-]+)*\.amazonaws\.(com|eu)$/.test(h)) return true;
+  return h === region || h.endsWith(`.${region}`);
+}
+
+// Retry-After in seconds, clamped to 0..15 (an HTTP date or junk falls back to 3).
+const retryAfter = (v) => { const n = Number(v); return Number.isFinite(n) && n >= 0 ? Math.min(n, 15) : 3; };
+const drain = async (res) => { try { await res.body?.cancel(); } catch { /* already consumed */ } };
+
+// clientId|region|secret → { token, exp (ms epoch) }. The secret is part of the
+// key so a changed or wrong secret never reuses a token minted with another one.
 const tokenCache = new Map();
 
 export class GenesysClient {
@@ -62,19 +103,21 @@ export class GenesysClient {
     this.apiUrl = `https://api.${this.region}`;
   }
 
+  cacheKey() { return `${this.clientId}|${this.region}|${this.clientSecret}`; }
+
   async token() {
-    const key = `${this.clientId}|${this.region}`;
+    const key = this.cacheKey();
     const cached = tokenCache.get(key);
     if (cached && cached.exp > Date.now()) return cached.token;
 
-    const res = await fetch(`${this.loginUrl}/oauth/token`, {
+    const res = await timedFetch(`${this.loginUrl}/oauth/token`, {
       method: 'POST',
       headers: {
         Authorization: `Basic ${btoa(`${this.clientId}:${this.clientSecret}`)}`,
         'Content-Type': 'application/x-www-form-urlencoded',
       },
       body: 'grant_type=client_credentials',
-    });
+    }, REQUEST_TIMEOUT_MS, 'Genesys login');
     if (!res.ok) {
       const body = await res.text();
       let detail = body.slice(0, 200);
@@ -86,6 +129,7 @@ export class GenesysClient {
       );
     }
     const data = await res.json();
+    if (!data?.access_token) throw new GenesysError('Genesys login returned no access token.', 502, 'login_failed');
     // Refresh 5 minutes early.
     const exp = Date.now() + Math.max(60, (data.expires_in || 3600) - 300) * 1000;
     tokenCache.set(key, { token: data.access_token, exp });
@@ -93,7 +137,25 @@ export class GenesysClient {
   }
 
   invalidateToken() {
-    tokenCache.delete(`${this.clientId}|${this.region}`);
+    tokenCache.delete(this.cacheKey());
+  }
+
+  // Request to a presigned URL Genesys handed back (file upload or download).
+  // HTTPS only, on an allowed file host, never with the Genesys token, and a
+  // presigned URL that asks for credential headers is refused.
+  async external(url, { method = 'GET', headers = {}, body } = {}) {
+    let u;
+    try { u = new URL(url); } catch { throw new GenesysError('Genesys returned a malformed file URL.', 502); }
+    if (u.protocol !== 'https:' || u.username || u.password) throw new GenesysError('Genesys did not return a plain HTTPS file URL.', 502);
+    if (!isFileHostAllowed(this.region, u.hostname)) {
+      throw new GenesysError(`Genesys returned a file URL on ${u.hostname}, which is neither Amazon S3 nor a Genesys host in ${this.region}; refusing to contact it.`, 502, 'file_host_refused');
+    }
+    const clean = {};
+    for (const [k, v] of Object.entries(headers || {})) {
+      if (/^(authorization|cookie|proxy-authorization)$/i.test(k)) throw new GenesysError('Genesys returned a forbidden header for a presigned URL.', 502);
+      clean[k] = String(v);
+    }
+    return timedFetch(u, { method, headers: clean, body }, FILE_TIMEOUT_MS, `${method} to the file URL`);
   }
 
   // Core request helper. `path` must start with /api/. Retries once on 401
@@ -110,21 +172,23 @@ export class GenesysClient {
     for (const [k, v] of Object.entries(query || {})) {
       if (v !== undefined && v !== null && v !== '') url.searchParams.set(k, String(v));
     }
-    const res = await fetch(url, {
+    const res = await timedFetch(url, {
       method,
       headers: {
         Authorization: `Bearer ${await this.token()}`,
         ...(body !== undefined ? { 'Content-Type': 'application/json' } : {}),
       },
       body: body !== undefined ? JSON.stringify(body) : undefined,
-    });
+    }, REQUEST_TIMEOUT_MS, `${method} ${path}`);
 
     if (res.status === 401 && !_retried) {
+      await drain(res);
       this.invalidateToken();
       return this.api(method, path, { body, query, _retried: true });
     }
     if (res.status === 429 && !_retried) {
-      const wait = Math.min(Number(res.headers.get('Retry-After') || 3), 15);
+      const wait = retryAfter(res.headers.get('Retry-After') ?? 3);
+      await drain(res);
       await new Promise((r) => setTimeout(r, wait * 1000));
       return this.api(method, path, { body, query, _retried: true });
     }
