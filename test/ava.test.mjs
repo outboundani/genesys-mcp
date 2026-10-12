@@ -277,6 +277,14 @@ test('avaBotFlowToArchyYaml emits a virtual-agent-enabled bot flow calling the a
   assert.equal(validateAvaBotFlowSpec({ name: 'x' }).ok, false);
 });
 
+test('bot flow YAML quotes the language, and non-string text fields are errors', () => {
+  const y = avaBotFlowToArchyYaml({ name: 'B', ava: 'Bot', language: 'no' });
+  assert.match(y, /defaultLanguage: 'no'/);
+  assert.match(y, /supportedLanguages:\n {4}'no':/);
+  const v = validateAvaBotFlowSpec({ name: { x: 1 }, ava: 'Bot', greeting: ['hi'] });
+  assert.ok(v.errors.includes('name must be a string') && v.errors.includes('greeting must be a string'), v.errors.join('; '));
+});
+
 test('inbound call flows have no bot-flow choice (bot flow OR IVR, never chained through a paid TTS engine)', () => {
   const bad = validateFlowSpec({ name: 'Main IVR', greeting: 'Welcome', menu: { prompt: 'p', choices: [{ dtmf: 1, action: 'virtual_agent', bot_flow: 'x' }] } });
   assert.equal(bad.ok, false);

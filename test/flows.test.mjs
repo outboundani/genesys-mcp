@@ -137,7 +137,51 @@ test('v2 YAML: queue voicemail carries callbackNumber and sanitized greeting', (
   const yaml = specToArchyYaml(spec);
   assert.match(yaml, /destination:\n {16}queue:\n {18}targetQueue:\n {20}lit:\n {22}name: 'Support'/);
   assert.match(yaml, /callbackNumber:\n {20}exp: ToPhoneNumber\(Call\.Ani\)/);
-  assert.match(yaml, /voicemailGreeting:\n {20}exp: 'AudioPlaybackOptions\(ToAudioTTS\("Say 'hi' after the tone"\), false\)'/);
+  // The double quotes become apostrophes inside the expression, and those are doubled in the YAML scalar.
+  assert.match(yaml, /voicemailGreeting:\n {20}exp: 'AudioPlaybackOptions\(ToAudioTTS\("Say ''hi'' after the tone"\), false\)'/);
+});
+
+test('TTS text with apostrophes and quotes always yields valid single-quoted YAML scalars', () => {
+  const tricky = ["We'll call you back.", 'say "hi"', "x' #", "it's 5 o'clock", 'back\\slash', "'quoted'"];
+  for (const s of tricky) {
+    const spec = {
+      name: 'Tricky', greeting: s, hours: { schedule_group: 'Hours', closed_message: s, holiday_message: s, closed_action: 'voicemail', closed_voicemail_queue: 'Support', closed_voicemail_greeting: s },
+      menu: { prompt: s, choices: [{ dtmf: '1', action: 'voicemail', queue: 'Support', voicemail_greeting: s, name: s }, { dtmf: '2', action: 'play_message', message: s }, { dtmf: '3', action: 'transfer_to_queue', queue: 'Support', pre_transfer_message: s, failure_message: s }] },
+    };
+    assert.equal(validateFlowSpec(spec).ok, true);
+    const yaml = specToArchyYaml(spec);
+    for (const line of yaml.split('\n')) {
+      const m = /^\s*(?:- )?[A-Za-z]+: (.*)$/.exec(line);
+      if (!m || !m[1].startsWith("'")) continue;
+      // A single-quoted scalar must be exactly one quoted token: no lone quote ends it early.
+      assert.match(m[1], /^'(?:[^']|'')*'$/, `${JSON.stringify(s)} broke: ${line}`);
+    }
+  }
+  const vm = specToArchyYaml({ name: 'V', greeting: 'Hi', menu: { prompt: 'p', choices: [{ dtmf: '1', action: 'voicemail', queue: 'Support', voicemail_greeting: "We'll call you back." }] } });
+  assert.match(vm, /exp: 'AudioPlaybackOptions\(ToAudioTTS\("We''ll call you back\."\), false\)'/);
+});
+
+test('the language is quoted (no, on, yes, off are booleans to a YAML 1.1 parser)', () => {
+  const base = { name: 'X', greeting: 'Hi', menu: { prompt: 'p', choices: [{ dtmf: '1', action: 'disconnect' }] } };
+  for (const lang of ['no', 'on', 'yes', 'off']) {
+    assert.match(specToArchyYaml({ ...base, language: lang }), new RegExp(`defaultLanguage: '${lang}'`), lang);
+  }
+  assert.match(specToArchyYaml(base), /defaultLanguage: 'en-us'/);
+});
+
+test('spec validation: non-object choices and non-string text fields are errors, not crashes or [object Object]', () => {
+  const base = { name: 'X', greeting: 'Hi', menu: { prompt: 'p', choices: [{ dtmf: '1', action: 'disconnect' }] } };
+  const v1 = validateFlowSpec({ ...base, menu: { prompt: 'p', choices: [null, { dtmf: '1', action: 'disconnect' }] } });
+  assert.equal(v1.ok, false);
+  assert.ok(v1.errors.some((e) => /choices\[0\] must be an object/.test(e)), v1.errors.join('; '));
+  const v2 = validateFlowSpec({ ...base, description: { x: 1 }, division: ['a'] });
+  assert.ok(v2.errors.includes('description must be a string') && v2.errors.includes('division must be a string'), v2.errors.join('; '));
+  const v3 = validateFlowSpec({ ...base, menu: { prompt: 'p', choices: [{ dtmf: '1', action: 'disconnect', name: { a: 1 } }] } });
+  assert.ok(v3.errors.some((e) => /choices\[0\]\.name must be a string/.test(e)), v3.errors.join('; '));
+  const v4 = validateFlowSpec({ ...base, menu: { prompt: { text: 'p' }, choices: base.menu.choices } });
+  assert.ok(v4.errors.includes('menu.prompt must be a string'), v4.errors.join('; '));
+  const v5 = validateFlowSpec({ ...base, hours: { schedule_group: { id: 1 }, closed_message: ['closed'], closed_action: 'voicemail', closed_voicemail_queue: 'Support', closed_voicemail_greeting: 7 } });
+  for (const k of ['schedule_group', 'closed_message', 'closed_voicemail_greeting']) assert.ok(v5.errors.includes(`hours.${k} must be a string`), `${k}: ${v5.errors.join('; ')}`);
 });
 
 test('v2 mermaid: hours diamond routes open to menu, closed to message', () => {

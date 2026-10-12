@@ -33,6 +33,7 @@ export const FLOW_ACTIONS = ['transfer_to_queue', 'disconnect', 'voicemail', 'tr
 //     holiday_message?: "TTS text (defaults to closed_message)",
 //     closed_action?: 'disconnect' (default) | 'voicemail',
 //     closed_voicemail_queue?   // required for closed_action 'voicemail'
+//     closed_voicemail_greeting? // TTS played before the closed-hours voicemail
 //   },
 //   menu: {
 //     prompt: "TTS text",
@@ -59,12 +60,20 @@ export function validateFlowSpec(spec) {
 
   const lang = spec.language || 'en-us';
   if (!/^[a-z]{2,3}(-[a-z0-9]{2,4})?$/i.test(lang)) errors.push(`language "${lang}" does not look like a language tag (e.g. en-us)`);
+  // Text fields must be strings: an object would become "[object Object]" in the YAML.
+  const mustBeText = (obj, keys, prefix) => {
+    for (const k of keys) {
+      if (obj[k] !== undefined && obj[k] !== null && typeof obj[k] !== 'string') errors.push(`${prefix}${k} must be a string`);
+    }
+  };
+  mustBeText(spec, ['name', 'greeting', 'description', 'division', 'language'], '');
 
   if (spec.hours !== undefined) {
     const h = spec.hours;
-    if (!h || typeof h !== 'object') {
+    if (!h || typeof h !== 'object' || Array.isArray(h)) {
       errors.push('hours must be an object');
     } else {
+      mustBeText(h, ['schedule_group', 'closed_message', 'holiday_message', 'closed_voicemail_queue', 'closed_voicemail_greeting'], 'hours.');
       if (!String(h.schedule_group || '').trim()) errors.push('hours.schedule_group (an existing schedule group name) is required');
       if (!String(h.closed_message || '').trim()) errors.push('hours.closed_message (TTS text) is required');
       const ca = h.closed_action || 'disconnect';
@@ -76,9 +85,10 @@ export function validateFlowSpec(spec) {
   }
 
   const menu = spec.menu;
-  if (!menu || typeof menu !== 'object') {
+  if (!menu || typeof menu !== 'object' || Array.isArray(menu)) {
     errors.push('menu is required');
   } else {
+    mustBeText(menu, ['prompt'], 'menu.');
     if (!String(menu.prompt || '').trim()) errors.push('menu.prompt (TTS text) is required');
     const choices = menu.choices;
     if (!Array.isArray(choices) || !choices.length) {
@@ -88,6 +98,8 @@ export function validateFlowSpec(spec) {
       const seen = new Set();
       choices.forEach((c, i) => {
         const where = `choices[${i}]`;
+        if (!c || typeof c !== 'object' || Array.isArray(c)) { errors.push(`${where} must be an object`); return; }
+        mustBeText(c, ['name', 'queue', 'number', 'message', 'pre_transfer_message', 'failure_message', 'voicemail_greeting'], `${where}.`);
         const key = String(c.dtmf);
         if (!(key in DTMF)) errors.push(`${where}.dtmf must be one of 0-9, *, # (got "${c.dtmf}")`);
         else if (seen.has(key)) errors.push(`${where}: duplicate dtmf "${key}"`);
@@ -162,7 +174,9 @@ export function specToArchyYaml(spec) {
     push(base + 2, 'callbackNumber:');
     push(base + 3, 'exp: ToPhoneNumber(Call.Ani)');
     push(base + 2, 'voicemailGreeting:');
-    push(base + 3, `exp: 'AudioPlaybackOptions(ToAudioTTS("${expText(greeting || 'Please leave your name, number, and a short message after the tone.')}"), false)'`);
+    // Quote the whole expression with yq, so an apostrophe in the greeting
+    // ("We'll call you back") cannot end the single-quoted YAML scalar early.
+    push(base + 3, `exp: ${yq(`AudioPlaybackOptions(ToAudioTTS("${expText(greeting || 'Please leave your name, number, and a short message after the tone.')}"), false)`)}`);
   };
 
   // Pre/failure transfer audio with friendly defaults: without them every
@@ -178,7 +192,7 @@ export function specToArchyYaml(spec) {
   push(1, `name: ${yq(spec.name)}`);
   if (spec.description) push(1, `description: ${yq(spec.description)}`);
   if (spec.division) push(1, `division: ${yq(spec.division)}`);
-  push(1, `defaultLanguage: ${spec.language || 'en-us'}`);
+  push(1, `defaultLanguage: ${yq(spec.language || 'en-us')}`); // quoted: "no" or "on" are booleans to a YAML 1.1 parser
   push(1, hours ? 'startUpRef: "/inboundCall/tasks/task[checkHours]"' : 'startUpRef: ./menus/menu[mainMenu]');
   push(1, 'initialGreeting:');
   push(2, `tts: ${yq(spec.greeting)}`);

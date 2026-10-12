@@ -657,6 +657,10 @@ export function validateAvaBotFlowSpec(spec) {
   if (!spec || typeof spec !== 'object') return { ok: false, errors: ['spec must be an object'] };
   if (!String(spec.name || '').trim()) errors.push('name is required');
   if (!String(spec.ava || spec.ava_name || '').trim()) errors.push('ava (the published agentic virtual agent\'s name) is required');
+  // Text fields must be strings: an object would become "[object Object]" in the YAML.
+  for (const k of ['name', 'ava', 'ava_name', 'description', 'division', 'language', 'greeting', 'failure_message', 'timeout_message', 'escalation_message']) {
+    if (spec[k] !== undefined && spec[k] !== null && typeof spec[k] !== 'string') errors.push(`${k} must be a string`);
+  }
   const lang = spec.language || 'en-us';
   if (!/^[a-z]{2,3}(-[a-z0-9]{2,4})?$/i.test(lang)) errors.push(`language "${lang}" does not look like a language tag (e.g. en-us)`);
   for (const [k, v] of Object.entries(spec.inputs || {})) {
@@ -692,9 +696,9 @@ export function avaBotFlowToArchyYaml(spec) {
   if (spec.description) push(1, `description: ${yq(spec.description)}`);
   if (spec.division) push(1, `division: ${yq(spec.division)}`);
   push(1, 'startUpRef: "/botFlow/bots/bot[main]"');
-  push(1, `defaultLanguage: ${lang}`);
+  push(1, `defaultLanguage: ${yq(lang)}`); // quoted: "no" or "on" are booleans to a YAML 1.1 parser
   push(1, 'supportedLanguages:');
-  push(2, `${lang}:`);
+  push(2, `${yq(lang)}:`);
   push(3, 'defaultLanguageSkill:');
   push(4, 'noValue: true');
   push(3, 'speechToText:');
