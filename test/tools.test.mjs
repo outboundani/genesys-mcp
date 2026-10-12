@@ -188,6 +188,18 @@ test('a failed chat continuation keeps the tool calls that already ran', async (
   });
 });
 
+test('export_flow with job_id checks the running export instead of starting a new one', async () => {
+  await withGenesys({
+    'GET /api/v2/flows/export/jobs/exp-7': () => ({ id: 'exp-7', status: 'Success', downloadUrl: 'https://api-downloads.usw2.pure.cloud/f.yaml' }),
+    'GET https://api-downloads.usw2.pure.cloud/f.yaml': () => 'inboundCall:\n  name: Main\n',
+  }, async (cfg, calls) => {
+    const r = await callTool(cfg, 'export_flow', { flow: G, job_id: 'exp-7' });
+    assert.match(r.yaml, /name: Main/);
+    assert.ok(!apiCalls(calls).some((c) => c.startsWith('POST')), 'no new export job');
+    await assert.rejects(() => callTool(cfg, 'export_flow', { flow: G, job_id: '../jobs' }), /plain id/);
+  });
+});
+
 test('a knowledge upload ticket on a foreign host fails the upload and cancels the sync', async () => {
   await withGenesys({
     'POST /api/v2/knowledge/sources/src-1/synchronizations': () => ({ id: 'sync-1' }),

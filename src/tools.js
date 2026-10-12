@@ -855,23 +855,29 @@ export const TOOLS = [
   },
   {
     name: 'export_flow',
-    description: 'Export an existing flow as Archy YAML (name or id). Runs an export job and returns the YAML text; useful for inspecting or using a flow as a template. Secret-looking values (passwords, tokens, keys, credentials, Authorization headers, and the values of variables named like them) are replaced with [redacted], so the export is NOT a faithful backup: never publish it back as is without restoring those values in Architect.',
+    description: 'Export an existing flow as Archy YAML (name or id). Runs an export job and returns the YAML text; useful for inspecting or using a flow as a template. Secret-looking values (passwords, tokens, keys, credentials, Authorization headers, and the values of variables named like them) are replaced with [redacted], so the export is NOT a faithful backup: never publish it back as is without restoring those values in Architect. If the export is still running, call export_flow again with the returned job_id to check it instead of starting a new export.',
     inputSchema: {
       type: 'object',
-      properties: { flow: { type: 'string', description: 'Flow name or id' } },
+      properties: {
+        flow: { type: 'string', description: 'Flow name or id' },
+        job_id: { type: 'string', description: 'Export job id returned by an earlier export_flow call that was still running' },
+      },
       required: ['flow'],
       additionalProperties: false,
     },
     handler: async (gc, a) => {
+      if (a.job_id !== undefined) pathId('job_id', a.job_id);
       const { id } = await resolveOne(gc, 'flow', '/api/v2/flows', a.flow);
-      const job = await gc.post('/api/v2/flows/export/jobs', { flows: [{ flow: { id }, exportType: 'Yaml' }] });
+      // A still-running export is checked by its job id instead of starting another job.
+      const job = a.job_id ? await gc.get(`/api/v2/flows/export/jobs/${a.job_id}`) : await gc.post('/api/v2/flows/export/jobs', { flows: [{ flow: { id }, exportType: 'Yaml' }] });
+      const jobId = pathId('export job id', a.job_id || job.id);
       let state = job;
       for (let i = 0; i < 6 && !['Success', 'Failure'].includes(state.status); i++) {
         await new Promise((r) => setTimeout(r, 3000));
-        state = await gc.get(`/api/v2/flows/export/jobs/${pathId('export job id', job.id)}`);
+        state = await gc.get(`/api/v2/flows/export/jobs/${jobId}`);
       }
       if (state.status !== 'Success') {
-        return { jobId: job.id, status: state.status, messages: state.messages, note: state.status === 'Failure' ? 'Export failed.' : 'Export still running; retry export_flow in a moment.' };
+        return { jobId, status: state.status, messages: state.messages, note: state.status === 'Failure' ? 'Export failed.' : `Export still running: call export_flow again with the same flow and job_id "${jobId}" to check it (that does not start a new export).` };
       }
       const dl = await gc.external(state.downloadUrl);
       if (!dl.ok) throw new GenesysError(`Export download failed: HTTP ${dl.status}`, dl.status);
