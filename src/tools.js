@@ -10,7 +10,7 @@ import { ABOUT } from './about.js';
 import { validateFlowSpec, specToArchyYaml, specToMermaid, configToMermaid, FLOW_ACTIONS } from './flows.js';
 import { composeAttemptLimits, composeCallableTimeSet, composeContactList, cadenceToMermaid, DIALING_MODES } from './outbound.js';
 import { AVA_TOOLS, AVA_WRITE_TOOLS, AVA_TOOL_GROUP } from './ava-tools.js';
-import { refusalFor, redactSecrets } from './rules.js';
+import { refusalFor, redactSecrets, redactNamedValues, redactArchyYaml } from './rules.js';
 
 // ---------- name → object resolution helpers ----------
 
@@ -278,14 +278,15 @@ export const TOOLS = [
   },
   {
     name: 'get_flow_configuration',
-    description: 'Get a flow\'s latest full configuration JSON (the actual flow logic: actions, menus, transfers). Large output - use for inspecting or rendering a specific flow.',
+    description: 'Get a flow\'s latest full configuration JSON (the actual flow logic: actions, menus, transfers). Large output - use for inspecting or rendering a specific flow. Secret-looking values (secret-named fields, and the value next to a secret-looking variable name) are replaced with [redacted].',
     inputSchema: {
       type: 'object',
       properties: { flow: { type: 'string', description: 'Flow name or id' } },
       required: ['flow'],
       additionalProperties: false,
     },
-    handler: async (gc, a) => gc.get(`/api/v2/flows/${(await resolveOne(gc, 'flow', '/api/v2/flows', a.flow)).id}/latestconfiguration`),
+    // Secret-named keys and { name: "apiKey", value: "..." } pairs are redacted.
+    handler: async (gc, a) => redactNamedValues(redactSecrets(await gc.get(`/api/v2/flows/${(await resolveOne(gc, 'flow', '/api/v2/flows', a.flow)).id}/latestconfiguration`))),
   },
   {
     name: 'list_prompts',
@@ -851,7 +852,7 @@ export const TOOLS = [
   },
   {
     name: 'export_flow',
-    description: 'Export an existing flow as Archy YAML (name or id). Runs an export job and returns the YAML text; useful for inspecting, backing up, or using a flow as a template.',
+    description: 'Export an existing flow as Archy YAML (name or id). Runs an export job and returns the YAML text; useful for inspecting or using a flow as a template. Secret-looking values (passwords, tokens, keys, credentials, Authorization headers, and the values of variables named like them) are replaced with [redacted], so the export is NOT a faithful backup: never publish it back as is without restoring those values in Architect.',
     inputSchema: {
       type: 'object',
       properties: { flow: { type: 'string', description: 'Flow name or id' } },
@@ -871,7 +872,8 @@ export const TOOLS = [
       }
       const dl = await gc.external(state.downloadUrl);
       if (!dl.ok) throw new GenesysError(`Export download failed: HTTP ${dl.status}`, dl.status);
-      const yaml = await dl.text();
+      // Secret-looking values in the export are redacted before truncation.
+      const yaml = redactArchyYaml(await dl.text());
       return { flowId: id, yaml: yaml.length > 40000 ? yaml.slice(0, 40000) + '\n# …truncated' : yaml };
     },
   },

@@ -79,6 +79,31 @@ test('ids from the caller are validated before any path is built', async () => {
   });
 });
 
+test('get_flow_configuration redacts secret keys and name/value secret pairs', async () => {
+  const flowConfig = { name: 'Main IVR', variables: [{ name: 'apiKey', value: 'K3y-Value-1234567890' }, { name: 'greeting', value: 'Hello' }], settings: { clientSecret: 'shh-0123456789' } };
+  await withGenesys({ [`GET /api/v2/flows/${G}/latestconfiguration`]: () => flowConfig }, async (cfg) => {
+    const r = await callTool(cfg, 'get_flow_configuration', { flow: G });
+    const text = JSON.stringify(r);
+    assert.equal(r.name, 'Main IVR');
+    assert.ok(!text.includes('K3y-Value-1234567890') && !text.includes('shh-0123456789'), text);
+    assert.match(text, /Hello/);
+  });
+});
+
+test('export_flow redacts secrets in the downloaded YAML and says the export is not a faithful backup', async () => {
+  const exportYaml = 'inboundCall:\n  name: Main IVR\n  variables:\n    - stringVariable:\n        name: Flow.apiKey\n        initialValue:\n          lit: sk_live_abcdef123456\n    - stringVariable:\n        name: Flow.greeting\n        initialValue:\n          lit: Hello there\n';
+  await withGenesys({
+    'POST /api/v2/flows/export/jobs': () => ({ id: 'exp-1', status: 'Success', downloadUrl: 'https://api-downloads.usw2.pure.cloud/flow.yaml?sig=1' }),
+    'GET https://api-downloads.usw2.pure.cloud/flow.yaml': () => exportYaml,
+  }, async (cfg) => {
+    const r = await callTool(cfg, 'export_flow', { flow: G });
+    assert.ok(!r.yaml.includes('sk_live_abcdef123456'), r.yaml);
+    assert.ok(r.yaml.includes('Hello there') && r.yaml.includes('Flow.apiKey'));
+  });
+  const { toolDefs } = await import('../src/tools.js');
+  assert.match(toolDefs().find((t) => t.name === 'export_flow').description, /\[redacted\].*NOT a faithful backup/s);
+});
+
 test('a knowledge upload ticket on a foreign host fails the upload and cancels the sync', async () => {
   await withGenesys({
     'POST /api/v2/knowledge/sources/src-1/synchronizations': () => ({ id: 'sync-1' }),

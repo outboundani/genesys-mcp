@@ -203,19 +203,216 @@ export function refusalFor(method, path, body, query) {
 // ---------- response redaction ----------
 
 // Credential-named fields some GETs return (OAuth client secrets, integration
-// credentials, passwords). Numbers and booleans pass through, so AVA token
+// credentials, passwords, data action Authorization / API key headers).
+// Keys are compared without "_", "-" or spaces, so X-Api-Key, api_key and
+// "Private Key" all match. Numbers and booleans pass through, so AVA token
 // COUNTS survive; paging cursors are not secrets either.
-const SECRET_KEY = /passw|secret|token|api_?key|credential/i;
+const SECRET_KEY = /passw|secret|token|apikey|credential|privatekey|accesskey|signingkey|authorization|bearer|cookie/;
 const NOT_SECRET = /^(next|prev|previous)?_?page_?token$|^(next|prev|previous)_?token$/i;
+const isSecretKey = (k) => SECRET_KEY.test(String(k).toLowerCase().replace(/[_\-\s]/g, '')) && !NOT_SECRET.test(k);
+
+// Credentials embedded in string values: "Bearer <token>" anywhere, and
+// "Basic <base64 of user:password>" (only when it really decodes to user:password,
+// so ordinary words after "Basic" are left alone).
+function decodesToUserPass(b64) {
+  try { return atob(b64).includes(':'); } catch { return false; }
+}
+export function redactSecretText(text) {
+  return String(text)
+    .replace(/\bBearer\s+[A-Za-z0-9._~+/=-]{8,}/g, 'Bearer [redacted]')
+    .replace(/\bBasic\s+([A-Za-z0-9+/]{6,}={0,2})(?![A-Za-z0-9+/=])/g, (m, b) => (decodesToUserPass(b) ? 'Basic [redacted]' : m));
+}
 
 export function redactSecrets(value, depth = 0) {
   if (depth > 64) return '[truncated]';
+  if (typeof value === 'string') return redactSecretText(value);
   if (Array.isArray(value)) return value.map((x) => redactSecrets(x, depth + 1));
   if (!value || typeof value !== 'object') return value;
   const out = {};
   for (const [k, v] of Object.entries(value)) {
-    const secret = SECRET_KEY.test(k) && !NOT_SECRET.test(k) && v !== null && v !== '' && typeof v !== 'number' && typeof v !== 'boolean';
+    const secret = isSecretKey(k) && v !== null && v !== '' && typeof v !== 'number' && typeof v !== 'boolean';
     out[k] = secret ? '[redacted]' : redactSecrets(v, depth + 1);
   }
+  return out;
+}
+
+// { name: "apiKey", value: "..." } style pairs hide a secret from key-based redaction.
+const SECRET_NAME = /passw|secret|token|api[-_]?key|credential|authorization|bearer|private[-_]?key|access[-_]?key|client[-_]?secret|x-auth/i;
+// Short names the substring test above cannot use without matching ordinary words:
+// a bare key, pwd, pass or passphrase segment (key, Flow.key, signing_key, X Api Key)
+// and camelCase ...Key or ...Pwd (licenseKey, adminPwd). "keys", "keyboard" and
+// "monkey" do not match.
+const SECRET_SHORT = /(^|[._\s-])(key|pwd|pass|passphrase)$/i;
+const SECRET_CAMEL = /[a-z0-9](Key|Pwd|Passphrase)$/;
+export function isSecretName(s) {
+  const t = String(s ?? '').trim().replace(/^["']|["']$/g, '').trim();
+  return SECRET_NAME.test(t) || SECRET_SHORT.test(t) || SECRET_CAMEL.test(t);
+}
+// A line VALUE names a secret when the substring test matches anywhere, or a short
+// name is the last word of the value (variable: Flow.licenseKey).
+// Inside a flow collection every word is checked ({ key: x }, [Flow.apiKey, x]);
+// a plain value only as one whole identifier, so a prompt like "press any key" is
+// not a name.
+const valueNamesSecret = (v) => {
+  const t = String(v ?? '').replace(/\s+#.*$/, '').trim().replace(/,$/, '');
+  if (SECRET_NAME.test(t) || (!/\s/.test(t) && isSecretName(t))) return true;
+  return /^[{[]/.test(t) && t.split(/[\s{}[\],:"']+/).some((w) => w && isSecretName(w));
+};
+
+// Secrets in exported Archy YAML. Archy splits a variable's name and its
+// value across keys (variable: Flow.apiKey / value: / lit: ...), which key-based
+// redaction never sees, and YAML allows any key order, multi-line scalars, quoted
+// keys and inline flow collections. Two passes:
+//   1. find every line that names a secret: a secret-looking KEY (password:,
+//      "apiKey":, Authorization:) or a secret-looking VALUE (name: Flow.apiKey);
+//   2. for a secret VALUE, its whole mapping block (every sibling line at the same
+//      indentation inside the same parent or list item, before AND after it, and
+//      everything nested under those siblings) has the scalars of value-carrying
+//      keys (lit, value, exp, text, defaultValue, initialValue) and every
+//      multi-line scalar replaced; for a secret KEY, its own value and everything
+//      nested under it.
+// A replaced value takes all of its continuation lines with it: the body of a
+// literal (|) or folded (>) block scalar, the rest of a multi-line quoted or plain
+// scalar, and the rest of a flow collection ({ ... } or [ ... ]) that spans lines.
+// An inline flow collection that names a secret anywhere is replaced whole, as a
+// value or as a list item. Bearer and Basic tokens are replaced anywhere. Line
+// breaks are CRLF, LF or CR.
+const VALUE_KEYS = /^(lit|value|exp|text|defaultValue|default|initialValue)$/i;
+const REDACTED_SCALAR = "'[redacted]'";
+// Open minus close brackets in a flow collection fragment, ignoring quoted text.
+function bracketDepth(s) {
+  let d = 0;
+  for (let i = 0; i < s.length; i++) {
+    const c = s[i];
+    if (c === '"') { i++; while (i < s.length && s[i] !== '"') { if (s[i] === '\\') i++; i++; } continue; }
+    if (c === "'") { i++; while (i < s.length && !(s[i] === "'" && s[i + 1] !== "'")) { if (s[i] === "'") i++; i++; } continue; }
+    if (c === '#' && (i === 0 || /\s/.test(s[i - 1]))) break;
+    if (c === '{' || c === '[') d++;
+    else if (c === '}' || c === ']') d--;
+  }
+  return d;
+}
+export function redactArchyYaml(text) {
+  const lines = String(text).split(/\r\n|\r|\n/);
+  const KEY_LINE = /^(\s*(?:- )*)([A-Za-z0-9_.$-](?:[A-Za-z0-9_.$ -]*[A-Za-z0-9_.$-])?|"(?:[^"\\]|\\.)*"|'(?:[^']|'')*'):(?:(\s+)(.*))?$/;
+  const info = lines.map((line) => {
+    const blank = !line.trim() || /^\s*#/.test(line);
+    const lead = /^ */.exec(line)[0].length;
+    const m = KEY_LINE.exec(line);
+    if (!m) {
+      const it = /^(\s*(?:- )+)(.*)$/.exec(line);
+      return { blank, key: null, indent: it ? it[1].length : lead, lead, item: !!it, itemPrefix: it?.[1], itemValue: it?.[2] ?? '' };
+    }
+    return { blank, m, key: m[2].replace(/^["']|["']$/g, ''), value: m[4] ?? '', indent: m[1].length, lead, item: /- $/.test(m[1]) };
+  });
+  const redactLine = new Array(lines.length).fill(false); // replace the value of this key line (or this list item)
+  const redactBody = new Array(lines.length).fill(false); // drop this line (a continuation of a replaced value)
+  const isFlowStart = (v) => /^[{[]/.test(v.trim());
+  const isMultiLineStart = (v) => {
+    const t = v.trim().replace(/^[&!][^\s]*\s*/, '');
+    return /^[|>]/.test(t) || (/^"/.test(t) && !/^"(?:[^"\\]|\\.)*"\s*,?\s*(#.*)?$/.test(t)) || (/^'/.test(t) && !/^'(?:[^']|'')*'\s*,?\s*(#.*)?$/.test(t)) || (isFlowStart(t) && bracketDepth(t) > 0);
+  };
+  const deeperThan = (i, indent, fn) => { for (let j = i + 1; j < lines.length; j++) { if (info[j].blank) continue; if (info[j].lead <= indent && info[j].indent <= indent) break; fn(j); } };
+  // Lines after i that close a flow collection opened on line i (it may close at any indent).
+  const flowRest = (i, start) => {
+    let d = bracketDepth(start);
+    for (let j = i + 1; j < lines.length && d > 0; j++) { redactBody[j] = true; d += bracketDepth(lines[j]); }
+  };
+  // Lines after i up to the one that closes a quoted scalar opened on line i (any indent).
+  const quoteRest = (i, q) => {
+    // An unescaped " ends a double-quoted scalar; a ' that is not a doubled '' ends a single-quoted one.
+    const closes = (s) => (q === '"' ? s.replace(/\\./g, '').includes('"') : s.replace(/''/g, '').includes("'"));
+    for (let j = i + 1; j < lines.length; j++) {
+      redactBody[j] = true;
+      if (closes(lines[j])) return;
+    }
+  };
+  const redactKeyLine = (i) => {
+    const L = info[i];
+    const v = L.key ? L.value : L.itemValue;
+    redactLine[i] = true;
+    const t = v.trim().replace(/^[&!][^\s]*\s+/, '');
+    if (isFlowStart(t) && bracketDepth(t) > 0) { flowRest(i, t); return; }
+    if (/^["']/.test(t) && isMultiLineStart(t)) { quoteRest(i, t[0]); return; }
+    if (v.trim() && !/^[&!][^\s]*$/.test(v.trim())) {
+      // A scalar on this line (plain, quoted, | or >): every deeper line is its body.
+      deeperThan(i, L.indent, (j) => { redactBody[j] = true; });
+    } else {
+      // A nested mapping or list (maybe after an anchor or tag): keep its keys,
+      // replace every value and scalar body under it.
+      deeperThan(i, L.indent, (j) => {
+        if (redactBody[j]) return;
+        if (info[j].key) { if (info[j].value.trim()) redactKeyLine(j); }
+        else if (info[j].item && info[j].itemValue.trim()) redactKeyLine(j);
+        else if (!info[j].item) redactBody[j] = true;
+      });
+    }
+  };
+  for (let i = 0; i < lines.length; i++) {
+    const L = info[i];
+    if (L.blank || redactBody[i]) continue;
+    if (!L.key) {
+      // A list item that is an inline flow collection: - { name: Flow.apiKey, value: x }
+      if (L.item && isFlowStart(L.itemValue) && valueNamesSecret(L.itemValue)) redactKeyLine(i);
+      continue;
+    }
+    const v = L.value.trim();
+    if (isSecretName(L.key)) { redactKeyLine(i); continue; }
+    if (isFlowStart(v) && valueNamesSecret(v)) { redactKeyLine(i); continue; }
+    if (v && valueNamesSecret(v)) {
+      // The mapping block this line belongs to: siblings at the same indent within
+      // the same parent or list item, in both directions.
+      const ind = L.indent;
+      let start = i;
+      if (!L.item) {
+        for (let j = i - 1; j >= 0; j--) {
+          if (info[j].blank) continue;
+          if (info[j].indent < ind && info[j].lead < ind) break;
+          start = j;
+          if (info[j].item && info[j].indent === ind) break; // the list item that opens this block
+        }
+      }
+      let end = i;
+      for (let j = i + 1; j < lines.length; j++) {
+        if (info[j].blank) { end = j; continue; }
+        if (info[j].lead < ind && info[j].indent <= ind) break;
+        if (info[j].item && info[j].indent === ind) break; // next list item
+        end = j;
+      }
+      for (let j = start; j <= end; j++) {
+        if (j === i || !info[j].key || redactBody[j]) continue;
+        if (VALUE_KEYS.test(info[j].key) || (info[j].value.trim() && isMultiLineStart(info[j].value))) redactKeyLine(j);
+      }
+      // The naming line itself only names the secret (Flow.apiKey); a multi-line
+      // value on it is still replaced.
+      if (isMultiLineStart(L.value)) redactKeyLine(i);
+    }
+  }
+  // A replaced value becomes one single-line scalar, and the continuation lines of
+  // its old multi-line body are dropped (the output stays valid YAML). A trailing
+  // comma (inside a flow collection) is kept.
+  const out = [];
+  lines.forEach((line, i) => {
+    if (redactBody[i] && !info[i].blank) return;
+    let l = line;
+    if (redactLine[i]) {
+      const L = info[i];
+      if (L.key && L.value.trim()) l = `${L.m[1]}${L.m[2]}:${L.m[3]}${REDACTED_SCALAR}${/,\s*$/.test(L.value) && !isFlowStart(L.value) ? ',' : ''}`;
+      else if (!L.key && L.item) l = `${L.itemPrefix}${REDACTED_SCALAR}`;
+    }
+    out.push(l.replace(/\b(Bearer|Basic)\s+[A-Za-z0-9._~+/=-]{6,}/g, '$1 [redacted]'));
+  });
+  return out.join('\n');
+}
+
+// { name: 'apiKey', value: '...' } pairs (flow configurations, header lists):
+// the value next to a secret-looking name or key is redacted.
+export function redactNamedValues(v, depth = 0) {
+  if (depth > 64) return '[truncated]';
+  if (Array.isArray(v)) return v.map((x) => redactNamedValues(x, depth + 1));
+  if (!v || typeof v !== 'object') return v;
+  const out = {};
+  const named = typeof v.name === 'string' && isSecretName(v.name) ? true : typeof v.key === 'string' && isSecretName(v.key);
+  for (const [k, x] of Object.entries(v)) out[k] = named && /^(value|defaultValue|text|lit)$/i.test(k) && x !== null && x !== '' ? '[redacted]' : redactNamedValues(x, depth + 1);
   return out;
 }

@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { refusalFor, redactSecrets, isOff, WRITE_FAMILIES } from '../src/rules.js';
+import { refusalFor, redactSecrets, redactNamedValues, redactArchyYaml, isOff, WRITE_FAMILIES } from '../src/rules.js';
 import { TOOLS } from '../src/tools.js';
 import { GenesysClient, GenesysError } from '../src/genesys.js';
 
@@ -291,4 +291,108 @@ test('credential and role reads are refused (GET included), ordinary reads stay 
   assert.equal(refusalFor('GET', '/api/v2/routing/queues'), null);
   assert.equal(refusalFor('GET', '/api/v2/integrations/actions'), null);
   assert.equal(refusalFor('GET', '/api/v2/authorization/divisions'), null);
+});
+
+test('redactSecrets also covers header-style keys and credentials inside string values', () => {
+  const r = redactSecrets({
+    config: { request: { headers: { Authorization: 'Bearer abc', 'X-Api-Key': 'k1', 'Proxy-Authorization': 'p', Cookie: 'c=1', 'Private Key': 'pk', accessKey: 'ak' } } },
+    requestTemplate: '{"auth": "Bearer eyJhbGciOiJIUzI1NiJ9.abc.def"}',
+    basic: 'Basic dXNlcjpwYXNzd29yZA==',
+    words: 'Basic Information about the queue',
+    tokenCount: 7, nextPageToken: 'cursor', name: 'Billing',
+  });
+  for (const k of ['Authorization', 'X-Api-Key', 'Proxy-Authorization', 'Cookie', 'Private Key', 'accessKey']) assert.equal(r.config.request.headers[k], '[redacted]', k);
+  assert.equal(r.requestTemplate, '{"auth": "Bearer [redacted]"}');
+  assert.equal(r.basic, 'Basic [redacted]');
+  assert.equal(r.words, 'Basic Information about the queue', 'ordinary words after "Basic" stay');
+  assert.equal(r.tokenCount, 7);
+  assert.equal(r.nextPageToken, 'cursor');
+  assert.equal(r.name, 'Billing');
+});
+
+test('redactNamedValues hides the value next to a secret-looking name, and only there', () => {
+  const r = redactNamedValues({ variables: [{ name: 'apiKey', value: 'K3y-1234567890' }, { name: 'Flow.licenseKey', defaultValue: 'L1' }, { key: 'password', text: 'p' }, { name: 'greeting', value: 'Hello' }] });
+  assert.equal(r.variables[0].value, '[redacted]');
+  assert.equal(r.variables[1].defaultValue, '[redacted]');
+  assert.equal(r.variables[2].text, '[redacted]');
+  assert.equal(r.variables[3].value, 'Hello');
+});
+
+test('redactArchyYaml removes secrets from exported flows and keeps harmless values', () => {
+  const exportYaml = [
+    'inboundCall:',
+    '  name: Main IVR',
+    '  variables:',
+    '    - stringVariable:',
+    '        name: Flow.apiKey',
+    '        initialValue:',
+    '          lit: sk_live_abcdef123456',
+    '    - stringVariable:',
+    '        name: Flow.greeting',
+    '        initialValue:',
+    '          lit: Hello there',
+    '  tasks:',
+    '    - task:',
+    '        actions:',
+    '          - callData:',
+    '              inputs:',
+    '                password:',
+    '                  lit: Hunter2-Pa55word',
+    '                user:',
+    '                  lit: alice',
+    '              headers:',
+    '                Authorization: Bearer abcdefghijk123',
+    '                x-api-key: kkkk-1234',
+    '          - updateData:',
+    '              statements:',
+    '                - string:',
+    '                    variable: Flow.authToken',
+    '                    value:',
+    '                      lit: tok_999999',
+    '                - string:',
+    '                    variable: Flow.city',
+    '                    value:',
+    '                      lit: Boston',
+  ].join('\n');
+  const out = redactArchyYaml(exportYaml);
+  for (const secret of ['sk_live_abcdef123456', 'Hunter2-Pa55word', 'abcdefghijk123', 'kkkk-1234', 'tok_999999']) assert.ok(!out.includes(secret), secret);
+  for (const keep of ['Hello there', 'alice', 'Boston', 'name: Main IVR', 'Flow.apiKey']) assert.ok(out.includes(keep), keep);
+});
+
+test('redactArchyYaml covers block scalars, multi-line and quoted forms, inline maps, key order and line endings', () => {
+  // Each shape carries SECRET-n values that must go and a KEEP-n twin that must survive.
+  const shapes = {
+    literalBlock: 'v:\n  - stringVariable:\n      name: Flow.apiKey\n      initialValue:\n        lit: |-\n          SECRET-1a\n          SECRET-1b\n  - stringVariable:\n      name: Flow.greeting\n      initialValue:\n        lit: |-\n          KEEP-1\n',
+    foldedBlock: 'h:\n  password: >\n    SECRET-2a\n    SECRET-2b\n  note: >-\n    KEEP-2\n',
+    literalUnderSecretKey: 'clientSecret: |\n  SECRET-3\nother: |\n  KEEP-3\n',
+    doubleQuotedMultiLine: 'x:\n  apiKey: "SECRET-4a\n    SECRET-4b"\n  city: "KEEP-4a\n    KEEP-4b"\n',
+    doubleQuotedOutdented: 'token: "SECRET-5a \\" still\nSECRET-5b"\nnext: KEEP-5\n',
+    singleQuotedMultiLine: "secret: 'SECRET-6a it''s\n  SECRET-6b'\nk: 'KEEP-6'\n",
+    plainContinuation: 'credentials: SECRET-7a\n  SECRET-7b\nk: KEEP-7\n',
+    valueBeforeName: 's:\n  - string:\n      value:\n        lit: SECRET-8\n      variable: Flow.apiToken\n  - string:\n      value:\n        lit: KEEP-8\n      variable: Flow.city\n',
+    initialValueBeforeName: 'v:\n  - stringVariable:\n      initialValue:\n        lit: SECRET-9\n      name: Flow.authorization\n  - stringVariable:\n      initialValue:\n        lit: KEEP-9\n      name: Flow.region\n',
+    inlineMap: 'inputs: { password: { lit: SECRET-10 }, user: { lit: x } }\nother: { user: KEEP-10 }\n',
+    inlineListItem: 'headers:\n  - { name: X-Api-Key, value: SECRET-11 }\n  - { name: Accept, value: KEEP-11 }\n',
+    inlineList: 'pair: [Flow.clientSecret, SECRET-12]\nplain: [a, KEEP-12]\n',
+    multiLineFlowMap: 'inputs: {\n  password: SECRET-13,\n  user: KEEP-13\n}\n',
+    multiLineFlowUnderKey: 'token: {\n  lit: SECRET-14\n}\nk: KEEP-14\n',
+    quotedKeys: '"clientSecret": "SECRET-15"\n\'credentials\': SECRET-15b\n"user": KEEP-15\n',
+    shortNames: 'key: SECRET-16\nlicenseKey: SECRET-16b\nX Api Key: SECRET-16c\nadmin_pwd: SECRET-16d\nkeys: KEEP-16\nmonkey: KEEP-16b\n',
+    namedByShortName: 'v:\n  - stringVariable:\n      name: Flow.licenseKey\n      initialValue:\n        lit: SECRET-17\n  - prompt:\n      text: Press any key\n      lit: KEEP-17\n',
+    anchoredNested: 'authorization: &a\n  lit: SECRET-18\nk: KEEP-18\n',
+    crOnly: 'a:\r  password: SECRET-19\r  user: KEEP-19\r',
+    crlf: 'a:\r\n  apiKey: SECRET-20\r\n  user: KEEP-20\r\n',
+    bearer: 'headers:\n  X-Custom: Bearer SECRET21abcdef\n  Accept: KEEP-21\n',
+  };
+  for (const [label, yaml] of Object.entries(shapes)) {
+    const out = redactArchyYaml(yaml);
+    assert.ok(!/SECRET/.test(out), `${label} leaks:\n${out}`);
+    const keeps = yaml.match(/KEEP-[0-9a-z]+/g) || [];
+    assert.ok(keeps.length, `${label} has a harmless twin`);
+    for (const keep of keeps) assert.ok(out.includes(keep), `${label} lost ${keep}:\n${out}`);
+    assert.match(out, /\[redacted\]/, label);
+  }
+  // A replaced value becomes one quoted scalar and its old body is gone, so the output stays valid YAML.
+  assert.equal(redactArchyYaml('a:\n  password: |\n    s1\n    s2\n  b: c'), "a:\n  password: '[redacted]'\n  b: c");
+  assert.equal(redactArchyYaml('inputs: {\n  password: s1,\n  user: x\n}'), "inputs: {\n  password: '[redacted]',\n  user: x\n}");
 });
