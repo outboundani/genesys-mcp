@@ -12,7 +12,7 @@
 // production: true AND an explicit user yes - same rule as the outbound group:
 // the AI builds it, a human presses go.
 
-import { GenesysError } from './genesys.js';
+import { GenesysError, pathId } from './genesys.js';
 import { AVA_SKILLS, AVA_SKILLS_VERSION, AVA_SKILLS_RELEASE, AVA_SKILLS_SOURCE } from './ava-playbooks.js';
 import {
   slugify, normalizeDefinition, preflightDefinition, validateTrajectory, computeScorecard, scorecardMarkdown,
@@ -62,7 +62,7 @@ async function resolveAva(gc, ref) {
 }
 
 async function resolveDataAction(gc, ref) {
-  if (/^(custom|static)_-_/.test(ref)) return { id: ref };
+  if (/^(custom|static)_-_/.test(ref)) return { id: pathId('data_action', ref) };
   const page = await gc.get('/api/v2/integrations/actions', { name: ref, pageSize: 50 });
   const entities = page.entities || [];
   const exact = entities.filter((e) => e.name?.toLowerCase() === String(ref).toLowerCase());
@@ -149,7 +149,7 @@ async function sendTurnDraining(gc, agentId, sessionId, { text, previousTurnId, 
 
 // ---------- chat (preview sessions against a published version) ----------
 
-const sessionsBase = (agentId) => `/api/v2/apps/agentic/virtualagents/${agentId}/sessions`;
+const sessionsBase = (agentId) => `/api/v2/apps/agentic/virtualagents/${pathId('ava id', agentId)}/sessions`;
 const MAX_NOOPS = 50;
 
 async function startSession(gc, agentId, { version, language, startContext, deadline }) {
@@ -309,7 +309,7 @@ export const AVA_TOOLS = [
       if (which === 'latest_saved') version = versionOf(ava.latestSavedVersion);
       else if (which === 'latest_published') version = versionOf(ava.latestProductionReadyVersion);
       if (!version) return { ava: slimAva(ava), version: null, note: which === 'latest_published' ? 'No ProductionReady version yet; try latest_saved.' : 'This AVA has no saved versions yet; run create_ava_version.' };
-      const v = await gc.get(`${AVA_BASE}/${ava.id}/versions/${version}`);
+      const v = await gc.get(`${AVA_BASE}/${pathId('ava id', ava.id)}/versions/${pathId('version', version)}`);
       return { agentId: ava.id, name: ava.name, version: v.version, status: v.status, dateModified: v.dateModified, definition: v.definition };
     },
   },
@@ -355,9 +355,10 @@ export const AVA_TOOLS = [
       additionalProperties: false,
     },
     handler: async (gc, a) => {
+      pathId('version', a.version);
       const ava = await resolveAva(gc, a.ava);
       const status = a.production ? 'ProductionReady' : 'TestReady';
-      const base = `${AVA_BASE}/${ava.id}/versions/${a.version}/jobs`;
+      const base = `${AVA_BASE}/${pathId('ava id', ava.id)}/versions/${pathId('version', a.version)}/jobs`;
       const job = await gc.post(base, { virtualAgentVersion: { status } });
       let state = job;
       // ~30s of polling keeps the call well inside the MCP client timeout.
@@ -385,8 +386,10 @@ export const AVA_TOOLS = [
       additionalProperties: false,
     },
     handler: async (gc, a) => {
+      pathId('version', a.version);
+      pathId('job_id', a.job_id);
       const ava = await resolveAva(gc, a.ava);
-      const s = await gc.get(`${AVA_BASE}/${ava.id}/versions/${a.version}/jobs/${a.job_id}`);
+      const s = await gc.get(`${AVA_BASE}/${pathId('ava id', ava.id)}/versions/${pathId('version', a.version)}/jobs/${pathId('job_id', a.job_id)}`);
       return { jobId: a.job_id, status: s.status, errors: s.errors?.length ? s.errors : undefined, tokenCount: s.tokenCount };
     },
   },
@@ -544,8 +547,9 @@ export const AVA_TOOLS = [
     },
     handler: async (gc, a) => {
       const deadline = Date.now() + 40000;
+      const sessionId = pathId('session_id', a.session_id);
       const ava = await resolveAva(gc, a.ava);
-      const r = await sendTurnDraining(gc, ava.id, a.session_id, { text: a.text, previousTurnId: a.previous_turn_id, version: a.version, deadline });
+      const r = await sendTurnDraining(gc, ava.id, sessionId, { text: a.text, previousTurnId: a.previous_turn_id, version: a.version, deadline });
       return r.truncated ? { ...r, note: 'The agent was still working when the time budget ran out; send an empty follow-up or ask it to continue.' } : r;
     },
   },

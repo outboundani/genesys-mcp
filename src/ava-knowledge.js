@@ -7,7 +7,7 @@
 // Files come from the AVA workspace (kind "knowledge") or inline content, not
 // a local disk; text formats only (Markdown, text, CSV, HTML).
 
-import { GenesysError } from './genesys.js';
+import { GenesysError, pathId } from './genesys.js';
 
 // ---------- MD5 (Workers have no MD5 in WebCrypto; the upload ticket needs one) ----------
 
@@ -321,7 +321,7 @@ export async function ensureFileUploadSource(gc, name) {
 }
 
 export async function getSynchronization(gc, sourceId, syncId) {
-  return gc.get(`${SOURCES}/${sourceId}/synchronizations/${syncId}`);
+  return gc.get(`${SOURCES}/${pathId('source_id', sourceId)}/synchronizations/${pathId('synchronization_id', syncId)}`);
 }
 
 export function synchronizationState(sync) {
@@ -342,9 +342,11 @@ export async function uploadKnowledgeDocuments(gc, { sourceId, files, syncType, 
   const validation = mdFiles.length ? validateKnowledgeFiles(mdFiles, { strict: true }) : null;
   if (validation?.blocked) return { workflowStatus: 'blocked', validation, note: validation.message };
 
+  pathId('source_id', sourceId);
   const sync = await gc.post(`${SOURCES}/${sourceId}/synchronizations`, { type: syncType });
   const syncId = sync.id;
   if (!syncId) throw new GenesysError('Genesys accepted the synchronization start but returned no synchronization id.', 502);
+  pathId('synchronization id', syncId);
   const uploaded = [];
   let completionAttempted = false;
   try {
@@ -362,7 +364,7 @@ export async function uploadKnowledgeDocuments(gc, { sourceId, files, syncType, 
       if (!Object.keys(headers).some((k) => k.toLowerCase() === 'content-type')) headers['Content-Type'] = f.contentType;
       let res;
       for (let attempt = 0; attempt < 3; attempt++) {
-        res = await fetch(url, { method: 'PUT', headers, body: f.bytes });
+        res = await gc.external(url, { method: 'PUT', headers, body: f.bytes });
         if (res.ok) break;
         if (![408, 429].includes(res.status) && res.status < 500) break;
         await sleep(500 * 2 ** attempt);

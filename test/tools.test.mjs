@@ -1,0 +1,95 @@
+// Tool handlers end to end against a fake Genesys (mocked fetch only, no network).
+import { test } from 'node:test';
+import assert from 'node:assert/strict';
+import { callTool } from '../src/tools.js';
+import { GenesysError } from '../src/genesys.js';
+
+const G = '11111111-2222-4333-8444-555555555555';
+let n = 0;
+
+// routes: { 'METHOD /api/v2/path': (url, init) => body | Response }. Unknown routes 404.
+// Returns { cfg, calls } where calls lists every request ("METHOD url").
+async function withGenesys(routes, fn) {
+  const calls = [];
+  const real = globalThis.fetch;
+  globalThis.fetch = async (input, init = {}) => {
+    const url = new URL(String(input));
+    const method = init.method || 'GET';
+    calls.push({ method, url: url.href, host: url.host, path: url.pathname, init });
+    if (url.pathname === '/oauth/token') return new Response(JSON.stringify({ access_token: 'tok', expires_in: 3600 }), { status: 200 });
+    const key = `${method} ${url.host.startsWith('api.') ? url.pathname : url.href.split('?')[0]}`;
+    const h = routes[key];
+    if (!h) return new Response(JSON.stringify({ message: `no route ${key}` }), { status: 404 });
+    const out = await h(url, init);
+    return out instanceof Response ? out : new Response(typeof out === 'string' ? out : JSON.stringify(out), { status: 200 });
+  };
+  // A fresh client id per test keeps the module token cache out of the way.
+  const cfg = { configured: true, clientId: `test-client-${++n}`, clientSecret: 'secret', region: 'usw2.pure.cloud' };
+  try { return await fn(cfg, calls); } finally { globalThis.fetch = real; }
+}
+
+const apiCalls = (calls) => calls.filter((c) => c.host.startsWith('api.')).map((c) => `${c.method} ${c.path}`);
+
+test('publish_flow refuses a job upload URL that is not S3 or a Genesys host, and sends the YAML nowhere', async () => {
+  await withGenesys({
+    'POST /api/v2/flows/jobs': () => ({ id: 'job-1', presignedUrl: 'https://collector.example/upload', headers: {} }),
+  }, async (cfg, calls) => {
+    await assert.rejects(() => callTool(cfg, 'publish_flow', { yaml: 'inboundCall:\n  name: X\n' }), (e) => e instanceof GenesysError && e.code === 'file_host_refused');
+    assert.ok(!calls.some((c) => c.host === 'collector.example'), 'nothing may be sent to the foreign host');
+  });
+});
+
+test('publish_flow uploads to an S3 presigned URL without the Genesys token', async () => {
+  await withGenesys({
+    'POST /api/v2/flows/jobs': () => ({ id: 'job-1', presignedUrl: 'https://bucket.s3.us-west-2.amazonaws.com/u?sig=1', headers: { 'Content-Type': 'text/plain' } }),
+    'PUT https://bucket.s3.us-west-2.amazonaws.com/u': () => '',
+    'GET /api/v2/flows/jobs/job-1': () => ({ status: 'Success', flow: { id: G, name: 'X' } }),
+  }, async (cfg, calls) => {
+    const realTimeout = globalThis.setTimeout;
+    globalThis.setTimeout = (f) => realTimeout(f, 0); // skip the poll wait
+    try {
+      const r = await callTool(cfg, 'publish_flow', { yaml: 'inboundCall:\n  name: X\n' });
+      assert.equal(r.status, 'Success');
+    } finally { globalThis.setTimeout = realTimeout; }
+    const put = calls.find((c) => c.method === 'PUT');
+    assert.ok(put && !Object.keys(put.init.headers).some((k) => /authorization/i.test(k)));
+  });
+});
+
+test('export_flow refuses a download URL on a foreign host', async () => {
+  await withGenesys({
+    'GET /api/v2/flows': () => ({ entities: [{ id: G, name: 'Main' }], pageCount: 1, total: 1 }),
+    'POST /api/v2/flows/export/jobs': () => ({ id: 'exp-1', status: 'Success', downloadUrl: 'https://collector.example/flow.yaml' }),
+  }, async (cfg, calls) => {
+    await assert.rejects(() => callTool(cfg, 'export_flow', { flow: G }), (e) => e.code === 'file_host_refused');
+    assert.ok(!calls.some((c) => c.host === 'collector.example'));
+  });
+});
+
+test('ids from the caller are validated before any path is built', async () => {
+  await withGenesys({}, async (cfg, calls) => {
+    await assert.rejects(() => callTool(cfg, 'get_flow_job', { job_id: '../../oauth/clients' }), /plain id/);
+    await assert.rejects(() => callTool(cfg, 'get_flow_job', { job_id: 'x/y' }), /plain id/);
+    await assert.rejects(() => callTool(cfg, 'publish_ava_version', { ava: G, version: '1/jobs/x' }), /plain id/);
+    await assert.rejects(() => callTool(cfg, 'get_ava_publish_job', { ava: G, version: '1', job_id: 'a/b' }), /plain id/);
+    await assert.rejects(() => callTool(cfg, 'get_knowledge_sync', { source_id: 'src/x', synchronization_id: 's' }), /plain id/);
+    await assert.rejects(() => callTool(cfg, 'ava_chat_send', { ava: G, session_id: 's/turns', text: 'hi', previous_turn_id: 't', version: '1' }), /plain id/);
+    await assert.rejects(() => callTool(cfg, 'get_data_action_schema', { data_action: 'custom_-_x/execute' }), /plain id/);
+    assert.deepEqual(apiCalls(calls), [], 'no API request may be sent for a bad id');
+  });
+});
+
+test('a knowledge upload ticket on a foreign host fails the upload and cancels the sync', async () => {
+  await withGenesys({
+    'POST /api/v2/knowledge/sources/src-1/synchronizations': () => ({ id: 'sync-1' }),
+    'POST /api/v2/knowledge/sources/src-1/synchronizations/sync-1/uploads': () => ({ url: 'https://collector.example/put', headers: {} }),
+    'PATCH /api/v2/knowledge/sources/src-1/synchronizations/sync-1': () => ({ ok: true }),
+  }, async (cfg, calls) => {
+    const r = await callTool(cfg, 'upload_knowledge_documents', { source_id: 'src-1', sync_type: 'Incremental', confirm_incremental: true, files: [{ name: 'notes.txt', content: 'hello' }] });
+    assert.equal(r.workflowStatus, 'upload_failed');
+    assert.match(r.error, /refusing to contact it/);
+    assert.ok(!calls.some((c) => c.host === 'collector.example'));
+    const cancel = calls.find((c) => c.method === 'PATCH');
+    assert.equal(JSON.parse(cancel.init.body).status, 'Cancelled');
+  });
+});

@@ -5,7 +5,7 @@
 // tools - see about.js for why. Outbound campaigns and sequences are always
 // created OFF, and no ignition tool ships: a human presses go.
 
-import { GenesysClient, GenesysError, REGIONS } from './genesys.js';
+import { GenesysClient, GenesysError, REGIONS, pathId } from './genesys.js';
 import { ABOUT } from './about.js';
 import { validateFlowSpec, specToArchyYaml, specToMermaid, configToMermaid, FLOW_ACTIONS } from './flows.js';
 import { composeAttemptLimits, composeCallableTimeSet, composeContactList, cadenceToMermaid, DIALING_MODES } from './outbound.js';
@@ -816,9 +816,9 @@ export const TOOLS = [
       let job;
       try { job = await gc.post('/api/v2/flows/jobs', {}); }
       catch (e) { if (e.status === 400) job = await gc.api('POST', '/api/v2/flows/jobs', {}); else throw e; }
-      const put = await fetch(job.presignedUrl, { method: 'PUT', headers: job.headers || {}, body: yaml });
+      const put = await gc.external(job.presignedUrl, { method: 'PUT', headers: job.headers || {}, body: yaml });
       if (!put.ok) throw new GenesysError(`YAML upload to the job URL failed: HTTP ${put.status} ${(await put.text()).slice(0, 200)}`, put.status);
-      const jobId = job.id;
+      const jobId = pathId('flow job id', job.id);
       let state = { status: 'Started' };
       for (let i = 0; i < 6 && !['Success', 'Failure'].includes(state.status); i++) {
         await new Promise((r) => setTimeout(r, 3500));
@@ -845,7 +845,7 @@ export const TOOLS = [
       additionalProperties: false,
     },
     handler: async (gc, a) => {
-      const s = await gc.get(`/api/v2/flows/jobs/${a.job_id}`, { expand: 'messages' });
+      const s = await gc.get(`/api/v2/flows/jobs/${pathId('job_id', a.job_id)}`, { expand: 'messages' });
       return { jobId: a.job_id, status: s.status, flow: s.flow ? { id: s.flow.id, name: s.flow.name } : undefined, messages: s.messages?.length ? s.messages : undefined };
     },
   },
@@ -864,12 +864,12 @@ export const TOOLS = [
       let state = job;
       for (let i = 0; i < 6 && !['Success', 'Failure'].includes(state.status); i++) {
         await new Promise((r) => setTimeout(r, 3000));
-        state = await gc.get(`/api/v2/flows/export/jobs/${job.id}`);
+        state = await gc.get(`/api/v2/flows/export/jobs/${pathId('export job id', job.id)}`);
       }
       if (state.status !== 'Success') {
         return { jobId: job.id, status: state.status, messages: state.messages, note: state.status === 'Failure' ? 'Export failed.' : 'Export still running; retry export_flow in a moment.' };
       }
-      const dl = await fetch(state.downloadUrl);
+      const dl = await gc.external(state.downloadUrl);
       if (!dl.ok) throw new GenesysError(`Export download failed: HTTP ${dl.status}`, dl.status);
       const yaml = await dl.text();
       return { flowId: id, yaml: yaml.length > 40000 ? yaml.slice(0, 40000) + '\n# …truncated' : yaml };

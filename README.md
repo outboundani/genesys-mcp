@@ -108,6 +108,8 @@ Differences from the IDE harness: knowledge uploads are text formats only (Markd
   - **Then allowlist writes.** POST/PUT/PATCH only reach the families the typed tools build: queues, skills, wrap-up codes, user routing skills, schedules and schedule groups, flows (not publish), outbound contact lists, attempt limits, callable time sets, DNC lists (add only), campaigns, sequences, AVAs (not publish), knowledge, and data action drafts. GETs stay broad.
   - **Always refused:** delete-style endpoints by any verb; every write under `/api/v2/conversations` (placing or controlling live calls); OAuth, token, credential, and authorization/role writes; agent presence and routing status; flow and AVA publishing (only `publish_flow` and `publish_ava_version` do that); data action execute/test; campaign rules, schedules, callbacks, and IVR/DNIS routing; any campaign or sequence status other than `"off"` (key and value matched case-insensitively, at any depth); and contacts written callable.
   - Secret-looking fields (passwords, secrets, tokens, API keys, credentials) are redacted from its responses.
+- File transfers (flow publish uploads, flow exports, knowledge uploads) go only to the presigned HTTPS URL Genesys returns, and only when it points at Amazon S3 or a Genesys host in your region; they never carry the Genesys token. Every Genesys request has a timeout.
+- Ids you or the AI pass in (job, version, session, source ids) must be plain ids before they go into an API path, so a value like `x/../other` cannot reach a different endpoint.
 
 ### Scoping the role
 
