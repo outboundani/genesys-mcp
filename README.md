@@ -75,7 +75,7 @@ Everything lands **off**. You review it in Admin, then you press go.
 
 1. `build_flow` turns a spec into Archy YAML and a Mermaid diagram: a TTS greeting, an optional **business-hours gate** (open goes to the menu; closed and holiday play a message, then disconnect or take a voicemail), and a DTMF menu whose choices can **transfer to a queue, take a queue voicemail, dial an external number, or disconnect**. Your AI shows you the diagram first.
 2. `publish_flow` registers an Architect flow job, uploads the YAML, and polls. Genesys validates and publishes server-side; validation errors come back verbatim.
-3. `render_flow` also diagrams flows that already exist in your org, and `export_flow` round-trips any flow back to YAML.
+3. `render_flow` also diagrams flows that already exist in your org, and `export_flow` returns any flow as YAML (with secret-looking values redacted, so treat it as a template, not a backup).
 
 TTS is inline in the flow (your org's TTS engine speaks it), so there are no audio files to record or upload.
 
