@@ -86,13 +86,14 @@ async function handleSetup(request, env, cfg) {
 
   const clientId = String(body.client_id || '').trim();
   const clientSecret = String(body.client_secret || '').trim();
-  const region = String(body.region || 'mypurecloud.com').trim();
+  let region = String(body.region || 'mypurecloud.com').trim();
   if (!clientId || !clientSecret) return json({ error: 'Client ID and Client Secret are required.' }, 400);
 
   // Validate the credentials against Genesys before saving anything.
   let orgName;
   try {
     const probe = new GenesysClient({ clientId, clientSecret, region });
+    region = probe.region; // saved in its canonical form (an unknown region already threw)
     orgName = (await probe.get('/api/v2/organizations/me')).name;
   } catch (e) {
     return json({ error: `Genesys rejected these credentials: ${e.message}` }, 400);

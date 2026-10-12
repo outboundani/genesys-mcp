@@ -85,3 +85,18 @@ test('REGIONS list looks sane', () => {
   assert.ok(REGIONS.includes('usw2.pure.cloud'));
   assert.ok(REGIONS.every((r) => !r.startsWith('login.') && !r.startsWith('api.')));
 });
+
+test('regions: the 18 official domains, and unknown regions are refused before any request', () => {
+  assert.equal(REGIONS.length, 18);
+  for (const d of ['use2.us-gov-pure.cloud', 'mxc1.pure.cloud', 'apse1.pure.cloud', 'edee1.eusc-pure.cloud']) {
+    assert.equal(normalizeRegion(d), d);
+    assert.equal(normalizeRegion(`https://login.${d}/#/authenticate`), d);
+  }
+  assert.ok(!REGIONS.includes('use2.pure.cloud'), 'use2.pure.cloud is not a Genesys region');
+  assert.equal(normalizeRegion('apse1'), 'apse1.pure.cloud');
+  // The client secret goes to login.<region>: a value outside the table must never become a host.
+  for (const bad of ['evil.example', 'use2.pure.cloud', 'mypurecloud', 'use2', 'mypurecloud.com.evil.example', 'usw2.pure.cloud/x', 'zz-bogus']) {
+    assert.throws(() => normalizeRegion(bad), (e) => e instanceof GenesysError && /Unknown Genesys Cloud region/.test(e.message), bad);
+    assert.throws(() => new GenesysClient({ clientId: 'x', clientSecret: 'y', region: bad }), /Unknown Genesys Cloud region/, bad);
+  }
+});

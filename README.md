@@ -33,6 +33,8 @@ The flow builder composes real Archy YAML, shows you the flow as a Mermaid diagr
 
 Prefer terminal-managed config? Set Wrangler secrets instead; they override the wizard: `GENESYS_CLIENT_ID`, `GENESYS_CLIENT_SECRET`, `GENESYS_REGION` (e.g. `usw2.pure.cloud`), `MCP_AUTH_TOKEN`.
 
+The region is the domain in your Genesys login address (`login.usw2.pure.cloud` means `usw2.pure.cloud`; FedRAMP is `use2.us-gov-pure.cloud`). Only the official Genesys Cloud region domains are accepted (the full list is in [src/genesys.js](src/genesys.js)), so a typo can never send your client secret to some other host; `*.pure.cloud` regions also accept their short form (`usw2`).
+
 ## Connect your AI
 
 The MCP endpoint is `https://<your-worker>/mcp`.

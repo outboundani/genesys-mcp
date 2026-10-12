@@ -12,32 +12,42 @@ export class GenesysError extends Error {
 }
 
 // Region = the domain suffix shared by login.<region> and api.<region>.
+// The 18 core regions from Genesys' "AWS regions for Genesys Cloud deployment"
+// table. The client secret is sent to login.<region>, so only these exact
+// domains are accepted: a typo or a hostile value can never point the server
+// (and the secret) at a host Genesys does not own.
 export const REGIONS = [
-  'mypurecloud.com',     // US East (Virginia)
-  'use2.pure.cloud',     // US East 2 (Ohio)
-  'usw2.pure.cloud',     // US West (Oregon)
-  'cac1.pure.cloud',     // Canada
-  'mypurecloud.ie',      // EU (Ireland)
-  'euw2.pure.cloud',     // EU (London)
-  'mypurecloud.de',      // EU (Frankfurt)
-  'euc2.pure.cloud',     // EU (Zurich)
-  'aps1.pure.cloud',     // Asia Pacific (Mumbai)
-  'apne2.pure.cloud',    // Asia Pacific (Seoul)
-  'apne3.pure.cloud',    // Asia Pacific (Osaka)
-  'mypurecloud.jp',      // Asia Pacific (Tokyo)
-  'mypurecloud.com.au',  // Asia Pacific (Sydney)
-  'sae1.pure.cloud',     // South America (São Paulo)
-  'mec1.pure.cloud',     // Middle East (UAE)
+  'mypurecloud.com',        // Americas (US East, Virginia)
+  'use2.us-gov-pure.cloud', // US East 2 (Ohio), FedRAMP
+  'usw2.pure.cloud',        // Americas (US West, Oregon)
+  'cac1.pure.cloud',        // Americas (Canada)
+  'sae1.pure.cloud',        // Americas (Sao Paulo)
+  'mxc1.pure.cloud',        // Mexico (Central)
+  'mypurecloud.de',         // EMEA (Frankfurt)
+  'mypurecloud.ie',         // EMEA (Dublin)
+  'euw2.pure.cloud',        // EMEA (London)
+  'euc2.pure.cloud',        // EMEA (Zurich)
+  'edee1.eusc-pure.cloud',  // European Sovereign Region (Brandenburg)
+  'mec1.pure.cloud',        // EMEA (UAE)
+  'aps1.pure.cloud',        // Asia Pacific (Mumbai)
+  'mypurecloud.jp',         // Asia Pacific (Tokyo)
+  'apne2.pure.cloud',       // Asia Pacific (Seoul)
+  'apne3.pure.cloud',       // Asia Pacific (Osaka)
+  'apse1.pure.cloud',       // Asia Pacific (Singapore)
+  'mypurecloud.com.au',     // Asia Pacific (Sydney)
 ];
+
+// Shorthand ("usw2") only for the *.pure.cloud regions, whose first label is
+// unique. "mypurecloud" is ambiguous and FedRAMP / Sovereign need the full domain.
+const SHORTHAND = new Map(REGIONS.filter((d) => d.endsWith('.pure.cloud')).map((d) => [d.split('.')[0], d]));
 
 export function normalizeRegion(region) {
   const r = String(region || '').trim().toLowerCase()
-    .replace(/^https?:\/\//, '').replace(/^(login|api)\./, '').replace(/\/+$/, '');
+    .replace(/^https?:\/\//, '').replace(/^(login|api|apps)\./, '').replace(/\/?(#.*)?$/, '');
   if (!r) return 'mypurecloud.com';
   if (REGIONS.includes(r)) return r;
-  // Shorthand like "usw2" → "usw2.pure.cloud"
-  const match = REGIONS.find((full) => full.split('.')[0] === r);
-  return match || r; // unknown values pass through - Genesys may add regions
+  if (SHORTHAND.has(r)) return SHORTHAND.get(r);
+  throw new GenesysError(`Unknown Genesys Cloud region "${String(region).slice(0, 60)}". Use the domain from your login address, one of: ${REGIONS.join(', ')}.`, 400, 'unknown_region');
 }
 
 // clientId|region → { token, exp (ms epoch) }
