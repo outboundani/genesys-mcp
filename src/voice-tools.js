@@ -42,7 +42,7 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 export const VOICE_TOOLS = [
   {
     name: 'list_voice_connectors',
-    description: 'List the Audio Connector integrations (voice bot connections, e.g. ElevenLabs) in this org: name, id, state, base URI, and whether a credential is attached. Use the name as voice_agent.connector in build_flow.',
+    description: 'List the Audio Connector integrations (voice bot connections, e.g. ElevenLabs) in this org: name, id, state, base URI, and whether a credential is attached. Use the name as voice_agent.connector in build_flow. The ElevenLabs agent on the other end must use u-law 8000 Hz (ulaw_8000) for both TTS output and user input audio.',
     inputSchema: { type: 'object', properties: {}, additionalProperties: false },
     handler: async (gc) => {
       const list = await audioConnectors(gc);
