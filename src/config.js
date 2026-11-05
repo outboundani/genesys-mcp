@@ -16,6 +16,9 @@ export async function loadConfig(env) {
     clientSecret: env.GENESYS_CLIENT_SECRET || stored?.clientSecret || '',
     region: (envManaged ? env.GENESYS_REGION : stored?.region) || env.GENESYS_REGION || 'mypurecloud.com',
     authToken: env.MCP_AUTH_TOKEN || stored?.authToken || '',
+    // Optional: lets create_voice_connector attach an ElevenLabs key without
+    // the key ever passing through the chat. Never returned by any tool.
+    elevenLabsKey: env.ELEVENLABS_API_KEY || '',
     source: envManaged ? 'env' : (stored ? 'kv' : 'none'),
     hasKv: Boolean(env.CONFIG),
     // The same namespace also stores AVA lifecycle artifacts (ava:* keys).

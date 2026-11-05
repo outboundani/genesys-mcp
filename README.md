@@ -46,7 +46,7 @@ The MCP endpoint is `https://<your-worker>/mcp`.
 
 Then try: *"check the connection and list my queues."*
 
-## The toolbox (71 tools)
+## The toolbox (73 tools)
 
 | Group | Tools |
 |---|---|
@@ -58,6 +58,7 @@ Then try: *"check the connection and list my queues."*
 | 🌳 Flows (Architect) | `list_flows`, `get_flow`, `get_flow_configuration`, `list_prompts`, `render_flow`, `export_flow` |
 | 🏗️ Flow Builder | `build_flow`, `publish_flow` ✏️, `get_flow_job`, `unlock_flow` ✏️ |
 | 🧠 Agentic Virtual Agents (AVA) | `ava_playbook`, `list_avas`, `get_ava`, `create_ava` ✏️, `get_ava_version`, `create_ava_version` ✏️, `publish_ava_version` ✏️, `get_ava_publish_job`, `list_data_actions`, `get_data_action_schema`, `create_data_action` ✏️, `list_knowledge_assets`, `validate_knowledge`, `ensure_knowledge_source` ✏️, `upload_knowledge_documents` ✏️, `get_knowledge_sync`, `ensure_knowledge_setting` ✏️, `ava_chat_start` ✏️, `ava_chat_send` ✏️, `ava_chat_end`, `ava_run_scripted_scenario` ✏️, `ava_record_verdicts`, `ava_validate_trajectory`, `ava_estimate_eval`, `ava_scorecard`, `ava_critique_report`, `ava_workspace_put`, `ava_workspace_get`, `ava_workspace_list`, `build_ava_bot_flow` |
+| 🎙️ Voice Agents (Audio Connector) | `list_voice_connectors`, `create_voice_connector` ✏️ (plus `build_flow` / `publish_flow` with a `voice_agent` block) |
 | ⚡ Power | `genesys_api_call` ✏️ (GETs anywhere under /api/v2/; writes only to an allowlist of the families above; see [Security model](#security-model)) |
 
 ✏️ = writes to your Genesys org (or spends its tokens); the AVA workspace tools only save to the server's own storage. Everything resolves names to GUIDs for you, so "the Weekend Support queue" just works.
@@ -78,6 +79,15 @@ Everything lands **off**. You review it in Admin, then you press go.
 3. `render_flow` also diagrams flows that already exist in your org, and `export_flow` returns any flow as YAML (with secret-looking values redacted, so treat it as a template, not a backup).
 
 TTS is inline in the flow (your org's TTS engine speaks it), so there are no audio files to record or upload.
+
+### How voice agents work (ElevenLabs)
+
+An ElevenLabs agent ([ElevenAgents](https://elevenlabs.io/agents/integrations/genesys)) can answer your calls through Genesys' Audio Connector, with the hand-off back to a person built in:
+
+1. Build the agent in ElevenLabs (their own MCP works for this). Set its TTS output and user input audio to **u-law 8000 Hz**, add data collection items for what the human agent should know (for example `transfer_to`, `caller_name`, `reason`, `summary`), and tell it to set `transfer_to` and use `end_call` when the caller asks for a person.
+2. `create_voice_connector` creates the Audio Connector integration with the ElevenLabs WebSocket and your API key, which it reads from the Worker secret `ELEVENLABS_API_KEY` (`npx wrangler secret put ELEVENLABS_API_KEY`). The key never goes through the chat.
+3. `build_flow` with a `voice_agent` block (`connector`, `agent_id`, `outputs`, `handoff: { queue }`) composes the flow: the call goes to the agent, everything it collected is saved as participant data (`AI caller name`, `AI reason`, `AI summary`) for the human agent, and if the caller wants a person, or the agent is unavailable, the call goes to your queue.
+4. Point a number at the flow yourself in Admin > Telephony > Call Routing. There is no tool for that, on purpose.
 
 ### How the AVA lifecycle works
 

@@ -156,6 +156,39 @@ campaigns and sequences are always created off, and a human presses go.
   (confirm sync type with the user) -> get_knowledge_sync until ready ->
   ensure_knowledge_setting -> attach as a KnowledgeSetting tool.
 
+## Voice agents on the phone (ElevenLabs via Audio Connector)
+
+- What it is: an ElevenLabs agent (ElevenAgents) answers the call through
+  Genesys' Audio Connector. Genesys keeps the number, routing and recording;
+  when the agent ends the conversation the call comes back to the flow with
+  the agent's outputs, and the flow hands off to a human queue if needed.
+- The chain, in order:
+  1. The ElevenLabs agent (built with ElevenLabs' own MCP if it is connected,
+     or an existing agent id). It MUST use u-law 8000 Hz for both the TTS
+     output format and the user input audio format, or the audio is noise.
+     Give it data collection items whose identifiers match the outputs you
+     will pass (for example transfer_to, caller_name, reason, summary), and a
+     prompt line telling it: when the caller asks for a person, confirm, set
+     transfer_to, and use end_call. Client tools are not supported over this
+     integration. Any dynamic variable the agent defines must be passed as an
+     input (caller_number is sent by default).
+  2. list_voice_connectors; if there is none, create_voice_connector (a
+     write: confirm first). The ElevenLabs API key comes from this server's
+     secret; NEVER ask the user to paste a key into the chat.
+  3. build_flow with voice_agent { connector, agent_id, outputs, handoff:
+     { queue } } instead of a menu -> show the diagram, get ONE approval ->
+     publish_flow -> get_flow_job until Success.
+  4. Pointing a phone number at the flow is a human step (Admin > Telephony >
+     Call Routing). Say so plainly; there is no tool for it, on purpose.
+- The human agent sees the outputs as participant data named "AI <output>"
+  (AI caller name, AI reason, AI summary): that is the context the call
+  arrives with. Outputs only fill when the agent ends the session cleanly
+  (end_call); if the caller hangs up first, nothing comes back.
+- If the agent fails (connector down, bad agent id), the flow falls back to
+  the handoff queue, so the caller still reaches a person.
+- Right after a brand new connector, Architect can take a few minutes to
+  offer the action; if a publish says it is unavailable, wait and retry.
+
 ## Porting flows from other platforms
 
 - Before declaring that something "does not survive the port", express it
@@ -169,4 +202,4 @@ campaigns and sequences are always created off, and a human presses go.
   queue's in-queue flow, not as a defect in the rebuilt flow.`;
 
 // Short version for the MCP initialize handshake.
-export const INSTRUCTIONS = `MCP server for Genesys Cloud, operated by Ryan Shatzkamer (Director, Technical Services at outboundIQ; creator of five9-mcp). Its purpose is BUILDING: queues, skills, users, wrap-up codes, Architect flows (compose, diagram in chat, publish), outbound - contact lists, campaigns, and cadences (campaign sequences) - and agentic virtual agents (AVA): the full lifecycle, design -> knowledge -> build -> test -> evaluate -> critique, using Genesys' own AVA playbooks. For ANY AVA work, call ava_playbook("dispatch") first and follow it; state lives in ava_workspace_*. Reads are safe; confirm before WRITE tools; it never deletes; campaigns are always created OFF and AVA versions publish as TestReady (production needs the user's explicit yes) - a human presses go. Call the "about" tool for full operator context and ground rules.`;
+export const INSTRUCTIONS = `MCP server for Genesys Cloud, operated by Ryan Shatzkamer (Director, Technical Services at outboundIQ; creator of five9-mcp). Its purpose is BUILDING: queues, skills, users, wrap-up codes, Architect flows (compose, diagram in chat, publish), outbound - contact lists, campaigns, and cadences (campaign sequences) - and agentic virtual agents (AVA): the full lifecycle, design -> knowledge -> build -> test -> evaluate -> critique, using Genesys' own AVA playbooks. It also puts third-party voice agents on the phone: an ElevenLabs agent answers through the Audio Connector and hands off to a human queue with context (list_voice_connectors / create_voice_connector, then build_flow with voice_agent). For ANY AVA work, call ava_playbook("dispatch") first and follow it; state lives in ava_workspace_*. Reads are safe; confirm before WRITE tools; it never deletes; campaigns are always created OFF and AVA versions publish as TestReady (production needs the user's explicit yes) - a human presses go. Call the "about" tool for full operator context and ground rules.`;

@@ -10,6 +10,7 @@ import { ABOUT } from './about.js';
 import { validateFlowSpec, specToArchyYaml, specToMermaid, configToMermaid, FLOW_ACTIONS } from './flows.js';
 import { composeAttemptLimits, composeCallableTimeSet, composeContactList, cadenceToMermaid, DIALING_MODES } from './outbound.js';
 import { AVA_TOOLS, AVA_WRITE_TOOLS, AVA_TOOL_GROUP } from './ava-tools.js';
+import { VOICE_TOOLS, VOICE_WRITE_TOOLS, VOICE_TOOL_GROUP } from './voice-tools.js';
 import { refusalFor, redactSecrets, redactNamedValues, redactArchyYaml } from './rules.js';
 
 // ---------- name → object resolution helpers ----------
@@ -781,7 +782,7 @@ export const TOOLS = [
   // ----- flow building (Architect) -----
   {
     name: 'build_flow',
-    description: 'Compose an inbound call flow from a spec WITHOUT publishing: validates it, returns the Archy YAML and a Mermaid diagram to show the user. Spec: { name, greeting, hours?: { schedule_group (existing group name, see create_schedule_group), closed_message, holiday_message?, closed_action?: disconnect|voicemail, closed_voicemail_queue?, closed_voicemail_greeting? }, menu: { prompt, choices: [{ dtmf: 0-9|*|#, action: transfer_to_queue|disconnect|voicemail|transfer_to_number|play_message, queue? (also the voicemail target: queue voicemail), number? (E.164), message? (play_message TTS), then? (play_message: return_to_menu|disconnect), name?, pre_transfer_message?, failure_message?, voicemail_greeting? }] }, description?, division?, language? }. Referenced queues and schedule groups must exist before publish. Show the diagram, get ONE approval, then call publish_flow with the same spec.',
+    description: 'Compose an inbound call flow from a spec WITHOUT publishing: validates it, returns the Archy YAML and a Mermaid diagram to show the user. Spec: { name, greeting, hours?: { schedule_group (existing group name, see create_schedule_group), closed_message, holiday_message?, closed_action?: disconnect|voicemail, closed_voicemail_queue?, closed_voicemail_greeting? }, menu: { prompt, choices: [{ dtmf: 0-9|*|#, action: transfer_to_queue|disconnect|voicemail|transfer_to_number|play_message, queue? (also the voicemail target: queue voicemail), number? (E.164), message? (play_message TTS), then? (play_message: return_to_menu|disconnect), name?, pre_transfer_message?, failure_message?, voicemail_greeting? }] }, description?, division?, language? }. VOICE AGENT flows: pass voice_agent INSTEAD of menu (greeting optional, no hours): { connector (Audio Connector name, see list_voice_connectors / create_voice_connector), agent_id (ElevenLabs agent id), name?, outputs? (the data collection identifiers of the agent, returned as output session variables and saved as participant data the human agent sees), handoff?: { queue, when? (the output that means the caller wants a person, default transfer_to), message?, failure_message? }, inputs? ({ name: text } dynamic variables), pass_caller_number? (default true: sends caller_number), fallback? (handoff|disconnect when the agent fails; default handoff) }. Referenced queues and schedule groups must exist before publish. Show the diagram, get ONE approval, then call publish_flow with the same spec.',
     inputSchema: {
       type: 'object',
       properties: { spec: { type: 'object', description: 'The flow spec (see tool description)', additionalProperties: true } },
@@ -955,6 +956,7 @@ export const TOOLS = [
 
   // ----- agentic virtual agents (see ava-tools.js) -----
   ...AVA_TOOLS,
+  ...VOICE_TOOLS,
 ];
 
 // ---------- registry plumbing ----------
@@ -988,6 +990,7 @@ export const WRITE_TOOLS = new Set([
   'create_campaign_sequence',
   'publish_flow', 'unlock_flow', 'genesys_api_call',
   ...AVA_WRITE_TOOLS,
+  ...VOICE_WRITE_TOOLS,
 ]);
 
 export const TOOL_GROUPS = [
@@ -998,6 +1001,7 @@ export const TOOL_GROUPS = [
   { name: 'Outbound (Campaigns & Cadences)', icon: '📤', tools: ['list_contact_lists', 'get_contact_list', 'create_contact_list', 'add_contacts', 'create_attempt_limits', 'create_callable_time_set', 'create_dnc_list', 'list_campaigns', 'get_campaign', 'create_campaign', 'create_campaign_sequence', 'list_outbound_assets', 'render_cadence'] },
   { name: 'Flows (Architect)', icon: '🌳', tools: ['list_flows', 'get_flow', 'get_flow_configuration', 'list_prompts', 'render_flow', 'export_flow'] },
   { name: 'Flow Builder', icon: '🏗️', tools: ['build_flow', 'publish_flow', 'get_flow_job', 'unlock_flow'] },
+  VOICE_TOOL_GROUP,
   AVA_TOOL_GROUP,
   { name: 'Power', icon: '⚡', tools: ['genesys_api_call'] },
 ];

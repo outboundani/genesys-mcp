@@ -23,7 +23,8 @@ export const FLOW_ACTIONS = ['transfer_to_queue', 'disconnect', 'voicemail', 'tr
 // ---------- spec validation ----------
 
 // Spec (v2): an inbound call flow with a TTS greeting, an optional
-// business-hours gate, and one DTMF menu.
+// business-hours gate, and one DTMF menu. OR (v3) a voice_agent block in
+// place of the menu: see "voice agent (Audio Connector)" below.
 // {
 //   name, description?, division?, language? (default en-us),
 //   greeting: "TTS text",
@@ -56,7 +57,8 @@ export function validateFlowSpec(spec) {
   if (!name) errors.push('name is required');
   else if (name.length > 200) errors.push('name must be 200 characters or fewer');
 
-  if (!String(spec.greeting || '').trim()) errors.push('greeting (TTS text) is required');
+  const voice = spec.voice_agent !== undefined;
+  if (!voice && !String(spec.greeting || '').trim()) errors.push('greeting (TTS text) is required');
 
   const lang = spec.language || 'en-us';
   if (!/^[a-z]{2,3}(-[a-z0-9]{2,4})?$/i.test(lang)) errors.push(`language "${lang}" does not look like a language tag (e.g. en-us)`);
@@ -67,6 +69,13 @@ export function validateFlowSpec(spec) {
     }
   };
   mustBeText(spec, ['name', 'greeting', 'description', 'division', 'language'], '');
+
+  if (voice) {
+    if (spec.menu !== undefined) errors.push('voice_agent replaces the menu: pass voice_agent OR menu, not both');
+    if (spec.hours !== undefined) errors.push('hours are not supported with voice_agent yet (gate the hours in the voice agent prompt, or build a menu flow)');
+    validateVoiceAgent(spec.voice_agent, errors);
+    return { ok: !errors.length, errors };
+  }
 
   if (spec.hours !== undefined) {
     const h = spec.hours;
@@ -125,6 +134,249 @@ export function validateFlowSpec(spec) {
     }
   }
   return { ok: !errors.length, errors };
+}
+
+// ---------- voice agent (Audio Connector) ----------
+
+// voice_agent: hand the call to a third-party voice bot over Genesys' Audio
+// Connector (built and verified against ElevenLabs ElevenAgents), save what
+// the bot collected as participant data the human agent can see, and hand
+// off to a queue when the bot says the caller wants a person.
+// {
+//   connector: "Audio Connector integration name",   // create_voice_connector
+//   agent_id: "the bot's id (ElevenLabs agent id)",   // becomes the Connector ID
+//   name?: "action label",
+//   inputs?: { session_variable: "literal text" },     // dynamic variables for the bot
+//   pass_caller_number?: true,                         // sends caller_number = the caller's ANI
+//   outputs?: ["transfer_to", "caller_name", ...],     // the bot's output session variables
+//   handoff?: { queue, when?: output name, message?, failure_message? },
+//   fallback?: "handoff" | "disconnect"                // when the bot fails (default: handoff if a queue is set)
+// }
+// Shapes copied from Architect's own export of a published Call Audio
+// Connector action: session variables sit on the action, the integration is a
+// key holding connectorId + outputs + failureOutputs, and output variables are
+// only filled on the success path (after the bot ends the session cleanly).
+export const VOICE_IDENT_RE = /^[A-Za-z][A-Za-z0-9_]{0,63}$/;
+const FALSEY = ['', 'false', 'False', 'FALSE', 'no', 'No', 'NO', 'none', 'None', 'null'];
+
+function validateVoiceAgent(va, errors) {
+  if (!va || typeof va !== 'object' || Array.isArray(va)) { errors.push('voice_agent must be an object'); return; }
+  for (const k of ['connector', 'agent_id', 'name']) {
+    if (va[k] !== undefined && typeof va[k] !== 'string') errors.push(`voice_agent.${k} must be a string`);
+  }
+  if (!String(va.connector || '').trim()) errors.push('voice_agent.connector (an Audio Connector integration name, see list_voice_connectors / create_voice_connector) is required');
+  const agentId = String(va.agent_id || '').trim();
+  if (!agentId) errors.push('voice_agent.agent_id (the bot id, e.g. the ElevenLabs agent id) is required');
+  else if (!/^[A-Za-z0-9_-]{1,128}$/.test(agentId)) errors.push(`voice_agent.agent_id "${agentId}" should be a plain id (letters, digits, _ or -)`);
+  if (va.pass_caller_number !== undefined && typeof va.pass_caller_number !== 'boolean') errors.push('voice_agent.pass_caller_number must be true or false');
+  if (va.inputs !== undefined) {
+    if (!va.inputs || typeof va.inputs !== 'object' || Array.isArray(va.inputs)) errors.push('voice_agent.inputs must be an object of { name: "text" }');
+    else {
+      for (const [k, v] of Object.entries(va.inputs)) {
+        if (!VOICE_IDENT_RE.test(k)) errors.push(`voice_agent.inputs: "${k}" is not a valid variable name (letters, digits, _; start with a letter)`);
+        if (typeof v !== 'string') errors.push(`voice_agent.inputs.${k} must be a string`);
+      }
+      if (Object.keys(va.inputs).length > 20) errors.push('voice_agent.inputs supports at most 20 variables');
+    }
+  }
+  const outputs = va.outputs === undefined ? [] : va.outputs;
+  if (!Array.isArray(outputs)) errors.push('voice_agent.outputs must be an array of output variable names');
+  else {
+    if (outputs.length > 20) errors.push('voice_agent.outputs supports at most 20 variables');
+    const seen = new Set();
+    outputs.forEach((o, i) => {
+      if (typeof o !== 'string' || !VOICE_IDENT_RE.test(o)) errors.push(`voice_agent.outputs[${i}] "${o}" is not a valid variable name (letters, digits, _; start with a letter)`);
+      else if (seen.has(o)) errors.push(`voice_agent.outputs: duplicate "${o}"`);
+      seen.add(o);
+    });
+  }
+  if (va.handoff !== undefined) {
+    const h = va.handoff;
+    if (!h || typeof h !== 'object' || Array.isArray(h)) errors.push('voice_agent.handoff must be an object');
+    else {
+      for (const k of ['queue', 'when', 'message', 'failure_message']) {
+        if (h[k] !== undefined && typeof h[k] !== 'string') errors.push(`voice_agent.handoff.${k} must be a string`);
+      }
+      if (!String(h.queue || '').trim()) errors.push('voice_agent.handoff.queue (an existing queue name) is required');
+      if (Array.isArray(outputs)) {
+        if (!outputs.length) errors.push('voice_agent.handoff needs at least one output to decide on (e.g. outputs: ["transfer_to"])');
+        else if (h.when !== undefined && !outputs.includes(h.when)) errors.push(`voice_agent.handoff.when "${h.when}" must be one of the outputs (${outputs.join(', ')})`);
+      }
+    }
+  }
+  if (va.fallback !== undefined && !['handoff', 'disconnect'].includes(va.fallback)) errors.push('voice_agent.fallback must be handoff or disconnect');
+  if (va.fallback === 'handoff' && !va.handoff) errors.push('voice_agent.fallback "handoff" needs voice_agent.handoff.queue');
+}
+
+// The output the handoff decision reads: handoff.when, else transfer_to if
+// present, else the first output.
+export function handoffOutput(va) {
+  const outs = va.outputs || [];
+  return va.handoff?.when || (outs.includes('transfer_to') ? 'transfer_to' : outs[0]);
+}
+
+const flowVar = (o) => `Flow.ai_${o}`;
+const attrName = (o) => `AI ${o.replace(/_/g, ' ')}`;
+
+function voiceAgentYaml(spec, push) {
+  const va = spec.voice_agent;
+  const outputs = va.outputs || [];
+  const inputs = { ...(va.pass_caller_number === false ? {} : { caller_number: null }), ...(va.inputs || {}) };
+  const handoff = va.handoff;
+  const fallback = va.fallback || (handoff ? 'handoff' : 'disconnect');
+  const when = handoff ? handoffOutput(va) : null;
+
+  push(1, 'startUpRef: "/inboundCall/tasks/task[voiceAgent]"');
+  push(1, 'initialGreeting:');
+  if (String(spec.greeting || '').trim()) push(2, `tts: ${yq(spec.greeting)}`);
+  // The bot usually speaks first: a 100 ms silent greeting keeps the publish
+  // warning-free ("main sequence has no audio set") without talking over it.
+  else push(2, `exp: ${yq('AudioPlaybackOptions(ToAudioBlank(100), false)')}`);
+  if (outputs.length) {
+    push(1, 'variables:');
+    for (const o of outputs) {
+      push(2, '- stringVariable:');
+      push(4, `name: ${flowVar(o)}`);
+      push(4, 'initialValue:');
+      push(5, 'noValue: true');
+    }
+  }
+  push(1, 'tasks:');
+  push(2, '- task:');
+  push(4, 'name: Voice Agent');
+  push(4, 'refId: voiceAgent');
+  push(4, 'actions:');
+  push(5, '- callAudioConnector:');
+  push(7, `name: ${yq(va.name || 'Voice agent')}`);
+  const inputNames = Object.keys(inputs);
+  if (inputNames.length) {
+    push(7, 'sessionVariables:');
+    for (const k of inputNames) {
+      push(8, '- sessionVariable:');
+      push(10, 'name:');
+      push(11, `lit: ${yq(k)}`);
+      push(10, 'value:');
+      if (inputs[k] === null) push(11, 'exp: ToString(Call.Ani)');
+      else push(11, `lit: ${yq(inputs[k])}`);
+    }
+  }
+  if (outputs.length) {
+    push(7, 'outputSessionVariables:');
+    for (const o of outputs) {
+      push(8, '- outputSessionVariable:');
+      push(10, 'name:');
+      push(11, `lit: ${yq(o)}`);
+      push(10, `variable: ${flowVar(o)}`);
+    }
+  }
+  push(7, 'integration:');
+  push(8, `${yq(va.connector)}:`);
+  push(9, 'connectorId:');
+  push(10, `lit: ${yq(va.agent_id)}`);
+  push(9, 'outputs:');
+  push(10, 'success:');
+  push(11, 'actions:');
+  if (outputs.length) {
+    push(12, '- setParticipantData:');
+    push(14, 'name: Save what the voice agent learned');
+    push(14, 'attributes:');
+    for (const o of outputs) {
+      push(15, '- attribute:');
+      push(17, 'name:');
+      push(18, `lit: ${yq(attrName(o))}`);
+      push(17, 'value:');
+      push(18, `exp: ${yq(`If(IsSet(${flowVar(o)}), ${flowVar(o)}, "")`)}`);
+    }
+  }
+  if (handoff) {
+    const v = flowVar(when);
+    const cond = [`IsSet(${v})`, ...FALSEY.map((f) => `${v} != "${f}"`)].join(' and ');
+    push(12, '- decision:');
+    push(14, `name: ${yq(`Caller wants a person? (${when})`)}`);
+    push(14, 'condition:');
+    push(15, `exp: ${yq(cond)}`);
+    push(14, 'outputs:');
+    push(15, '"yes":');
+    push(16, 'actions:');
+    push(17, '- jumpToTask:');
+    push(19, 'name: Hand off to a person');
+    push(19, 'targetTaskRef: "/inboundCall/tasks/task[handoff]"');
+  }
+  if (!outputs.length && !handoff) {
+    // Nothing to do on success: Archy still wants the path to have an action.
+    push(12, '- disconnect:');
+    push(14, 'name: Voice agent finished');
+  }
+  push(10, 'failure:');
+  push(11, 'actions:');
+  push(12, '- setParticipantData:');
+  push(14, 'name: Save the voice agent error');
+  push(14, 'attributes:');
+  push(15, '- attribute:');
+  push(17, 'name:');
+  push(18, `lit: ${yq('AI error')}`);
+  push(17, 'value:');
+  push(18, `exp: ${yq('If(IsSet(Task.voiceAgentErrorType), Task.voiceAgentErrorType, "unknown")')}`);
+  if (fallback === 'handoff') {
+    push(12, '- jumpToTask:');
+    push(14, 'name: Fall back to a person');
+    push(14, 'targetTaskRef: "/inboundCall/tasks/task[handoff]"');
+  }
+  push(9, 'failureOutputs:');
+  push(10, 'errorType:');
+  push(11, 'var: Task.voiceAgentErrorType');
+  push(10, 'errorMessage:');
+  push(11, 'var: Task.voiceAgentErrorMessage');
+  push(5, '- disconnect:');
+  push(7, 'name: End call');
+  if (handoff) {
+    push(2, '- task:');
+    push(4, 'name: Hand Off');
+    push(4, 'refId: handoff');
+    push(4, 'actions:');
+    push(5, '- transferToAcd:');
+    push(7, `name: ${yq(`Transfer to ${handoff.queue}`)}`);
+    push(7, 'targetQueue:');
+    push(8, 'lit:');
+    push(9, `name: ${yq(handoff.queue)}`);
+    push(7, 'preTransferAudio:');
+    push(8, `tts: ${yq(handoff.message || 'Connecting you now.')}`);
+    push(7, 'failureTransferAudio:');
+    push(8, `tts: ${yq(handoff.failure_message || "Sorry, we can't connect you right now. Please try again later.")}`);
+    push(5, '- disconnect:');
+    push(7, 'name: Disconnect after failed transfer');
+  }
+}
+
+function voiceAgentMermaid(spec, L) {
+  const va = spec.voice_agent;
+  const outputs = va.outputs || [];
+  let prev = 'start';
+  if (String(spec.greeting || '').trim()) {
+    L.push(`  greet["🔊 ${mLabel(spec.greeting)}"]`);
+    L.push('  start --> greet');
+    prev = 'greet';
+  }
+  L.push(`  va[["🎙️ ${mLabel(va.name || 'Voice agent', 40)}<br/>${mLabel(va.connector, 30)} · ${mLabel(va.agent_id, 30)}"]]`);
+  L.push(`  ${prev} --> va`);
+  let after = 'va';
+  if (outputs.length) {
+    L.push(`  pd["📝 Saved for the agent: ${mLabel(outputs.join(', '), 70)}"]`);
+    L.push('  va -->|conversation ends| pd');
+    after = 'pd';
+  }
+  L.push('  bye(("👋 end"))');
+  const fallback = va.fallback || (va.handoff ? 'handoff' : 'disconnect');
+  if (va.handoff) {
+    L.push(`  dec{"Caller wants a person?<br/>(${mLabel(handoffOutput(va), 30)})"}`);
+    L.push(`  ${after} --> dec`);
+    L.push(`  q[["🎧 Queue: ${mLabel(va.handoff.queue, 40)}"]]`);
+    L.push('  dec -->|yes| q');
+    L.push('  dec -->|no| bye');
+  } else {
+    L.push(`  ${after} --> bye`);
+  }
+  L.push(fallback === 'handoff' ? '  va -.->|agent unavailable| q' : '  va -.->|agent unavailable| bye');
 }
 
 // ---------- Archy YAML composition ----------
@@ -193,6 +445,10 @@ export function specToArchyYaml(spec) {
   if (spec.description) push(1, `description: ${yq(spec.description)}`);
   if (spec.division) push(1, `division: ${yq(spec.division)}`);
   push(1, `defaultLanguage: ${yq(spec.language || 'en-us')}`); // quoted: "no" or "on" are booleans to a YAML 1.1 parser
+  if (spec.voice_agent) {
+    voiceAgentYaml(spec, push);
+    return L.join('\n') + '\n';
+  }
   push(1, hours ? 'startUpRef: "/inboundCall/tasks/task[checkHours]"' : 'startUpRef: ./menus/menu[mainMenu]');
   push(1, 'initialGreeting:');
   push(2, `tts: ${yq(spec.greeting)}`);
@@ -326,6 +582,10 @@ function choiceNode(id, c) {
 export function specToMermaid(spec) {
   const L = ['flowchart TD'];
   L.push(`  start(["📞 ${mLabel(spec.name)}"])`);
+  if (spec.voice_agent) {
+    voiceAgentMermaid(spec, L);
+    return L.join('\n');
+  }
   L.push(`  greet["🔊 ${mLabel(spec.greeting)}"]`);
   L.push('  start --> greet');
   let menuFrom = 'greet';
@@ -394,7 +654,13 @@ export function configToMermaid(cfg) {
         L.push(`  ${sid} -->|${key === '' ? '?' : key}| ${cid}`);
       });
     } else if (seq.__type === 'Task' || /Task/i.test(seq.__type || '')) {
-      const hasSchedule = JSON.stringify(seq).includes('ScheduleGroup');
+      const raw = JSON.stringify(seq);
+      const hasSchedule = raw.includes('ScheduleGroup');
+      if (/AudioConnector/.test(raw)) {
+        L.push(`  ${sid}[["🎙️ ${mLabel(seq.name || 'Voice agent', 50)} (Audio Connector)"]]`);
+        if (isStart) L.push(`  ${prev} --> ${sid}`);
+        return;
+      }
       L.push(`  ${sid}${hasSchedule ? `{"🕐 ${mLabel(seq.name || 'Check Hours', 40)}"}` : `["${mLabel(seq.name || 'Task', 50)}"]`}`);
     } else {
       L.push(`  ${sid}["${mLabel(`${seq.name || seq.__type || 'Step'}`, 50)}"]`);
